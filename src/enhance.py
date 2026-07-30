@@ -56,18 +56,19 @@ def enhance_image(model, device, image_path,
 
 
 @torch.no_grad()
-def enhance_frame_batch(model, device, frames_rgb,
-                        size=256):
+def enhance_frame_batch(model, device, frames_rgb, size=512):
     """
     Enhance a batch of video frames.
+    Uses size=512 for better quality on HD video.
     Input : list of (H,W,3) uint8 RGB arrays
     Output: list of (H,W,3) uint8 RGB arrays
     """
-    orig_sizes = [(f.shape[1], f.shape[0])
-                  for f in frames_rgb]
+    orig_sizes = [(f.shape[1], f.shape[0]) for f in frames_rgb]
 
+    # Use higher resolution for less blur
     resized = np.stack([
-        cv2.resize(f, (size, size))
+        cv2.resize(f, (size, size),
+                   interpolation=cv2.INTER_LANCZOS4)
         for f in frames_rgb
     ]).astype(np.float32) / 255.0
 
@@ -77,18 +78,42 @@ def enhance_frame_batch(model, device, frames_rgb,
     out    = (enh.permute(0, 2, 3, 1).cpu().numpy()
               * 255).clip(0, 255).astype(np.uint8)
 
-    return [
-        cv2.resize(out[i], orig_sizes[i])
-        for i in range(len(frames_rgb))
-    ]
+    results = []
+    for i, frame in enumerate(out):
+        # Color balance
+        f = frame.astype(np.float32)
+        r = f[:,:,0].mean()
+        g = f[:,:,1].mean()
+        b = f[:,:,2].mean()
+        avg = (r + g + b) / 3.0
+        if r > 0: f[:,:,0] = f[:,:,0] * (avg / r)
+        if g > 0: f[:,:,1] = f[:,:,1] * (avg / g)
+        if b > 0: f[:,:,2] = f[:,:,2] * (avg / b)
+        frame = np.clip(f, 0, 255).astype(np.uint8)
 
+        # Resize back with high quality
+        result = cv2.resize(
+            frame, orig_sizes[i],
+            interpolation=cv2.INTER_LANCZOS4)
+
+        # Slight sharpening to reduce upscale blur
+        kernel = np.array([
+            [ 0, -0.5,  0],
+            [-0.5,  3, -0.5],
+            [ 0, -0.5,  0]])
+        sharp  = cv2.filter2D(result, -1, kernel)
+        result = np.clip(sharp, 0, 255).astype(np.uint8)
+
+        results.append(result)
+
+    return results
 
 def enhance_video(model, device,
                   input_path, output_path,
                   original_path=None,
                   comparison_path=None,
-                  batch_size=8,
-                  size=256):
+                  batch_size=4,
+                  size=512):
     """
     Enhance a full video.
 
