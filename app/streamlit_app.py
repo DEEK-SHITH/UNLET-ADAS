@@ -432,32 +432,32 @@ streamlit run app/streamlit_app.py
                         enp = (enh.permute(0,2,3,1
                             ).cpu().numpy()*255
                             ).clip(0,255).astype(np.uint8)
-			# Sharpening to reduce upscale blur
-			kernel = np.array([
-   				 [ 0, -0.5,  0],
-    				 [-0.5,  3, -0.5],
-    				 [ 0, -0.5,  0]])
+            # Sharpening to reduce upscale blur
+            kernel = np.array([
+                 [ 0, -0.5,  0],
+                     [-0.5,  3, -0.5],
+                     [ 0, -0.5,  0]])
 
-			for orig_bgr, enh_rgb in zip(ob, enp):
-    			    # Color balance
-   			    f = enh_rgb.astype(np.float32)
-    			    r=f[:,:,0].mean(); g=f[:,:,1].mean(); b=f[:,:,2].mean()
-    			    avg=(r+g+b)/3
-    			    if r>0: f[:,:,0]*=(avg/r)
-   			    if g>0: f[:,:,1]*=(avg/g)
-   			    if b>0: f[:,:,2]*=(avg/b)
-    			    enh_rgb=np.clip(f,0,255).astype(np.uint8)
+            for orig_bgr, enh_rgb in zip(ob, enp):
+                    # Color balance
+                f = enh_rgb.astype(np.float32)
+                    r=f[:,:,0].mean(); g=f[:,:,1].mean(); b=f[:,:,2].mean()
+                    avg=(r+g+b)/3
+                    if r>0: f[:,:,0]*=(avg/r)
+                if g>0: f[:,:,1]*=(avg/g)
+                if b>0: f[:,:,2]*=(avg/b)
+                    enh_rgb=np.clip(f,0,255).astype(np.uint8)
 
-    			    # Resize with high quality
-    			    ef = cv2.resize(enh_rgb,(W_v,H_v),
-					    interpolation=cv2.INTER_LANCZOS4)
+                    # Resize with high quality
+                    ef = cv2.resize(enh_rgb,(W_v,H_v),
+                        interpolation=cv2.INTER_LANCZOS4)
 
-   			    # Sharpen
-   			    ef = np.clip(
-       				 cv2.filter2D(ef,-1,kernel),0,255
-       				 ).astype(np.uint8)
+                # Sharpen
+                ef = np.clip(
+                     cv2.filter2D(ef,-1,kernel),0,255
+                     ).astype(np.uint8)
 
-   			    eb = cv2.cvtColor(ef, cv2.COLOR_RGB2BGR)
+                eb = cv2.cvtColor(ef, cv2.COLOR_RGB2BGR)
 
                         for orig_bgr, enh_rgb in zip(ob,enp):
                             # Color balance
