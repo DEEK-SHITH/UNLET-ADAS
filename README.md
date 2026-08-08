@@ -30,7 +30,7 @@ clearly visible for ADAS computer vision pipelines.
 |--------|------------|--------|-------------|
 | Original (Dark Input) | 7.80 | 0.186 | baseline |
 | AutoContrast (Traditional) | 13.12 | 0.518 | +5.32 dB |
-| **UNLET-ADAS (Ours)** | **18.80** | **0.747** | **+11.00 dB** |
+| **UNLET-ADAS (Ours)** | **19.20** | **0.753** | **+11.40 dB** |
 
 > UNLET-ADAS outperforms traditional AutoContrast by **+5.68 dB PSNR**
 > and achieves **4× better SSIM** than the dark input.
