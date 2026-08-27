@@ -776,7 +776,17 @@ with tab_live:
         "This is a snap-and-analyze flow, not a continuous live "
         "video feed — Streamlit's browser camera API is snapshot-based.")
 
-    live_shot = st.camera_input("Take a photo")
+    camera_on = st.checkbox(
+        "📷 Turn Camera On", value=False, key='camera_on',
+        help="Off by default — the browser only asks for camera "
+             "permission / shows a live preview once you switch "
+             "this on, not just from visiting this tab.")
+
+    if not camera_on:
+        st.info("Camera is off. Turn it on above to take a photo.")
+        live_shot = None
+    else:
+        live_shot = st.camera_input("Take a photo")
 
     if live_shot is not None:
         pil_live = Image.open(live_shot).convert('RGB')
