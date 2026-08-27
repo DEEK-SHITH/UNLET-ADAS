@@ -37,6 +37,52 @@ clearly visible for ADAS computer vision pipelines.
 
 ---
 
+## 🆙 Sharper Output & Better Detection
+
+Earlier versions resized every frame down to a small square for the
+network and upscaled it back with a sharpening filter — that
+resize round-trip was the source of the blurry output. The pipeline
+now:
+
+- **Applies enhancement curves at full resolution.** Zero-DCE++
+  estimates its per-pixel curves on a small 256px proxy (cheap and
+  robust), but those smooth curve maps are then upsampled and applied
+  directly to the original frame — no pixel content is ever
+  downscaled, so fine detail and edges (lane markings, distant
+  vehicles, pedestrians) stay sharp.
+- **Adapts to scene brightness automatically.** A blend factor based
+  on average luminance gives full enhancement to dark scenes (night,
+  tunnels, shaded hillside bends) and fades enhancement out for
+  already well-lit daytime frames, so the same pipeline helps at
+  night, in hilly terrain with sudden shadow/light changes, **and**
+  during the day without washing anything out.
+- **Uses a stronger default detector** (YOLOv8s instead of YOLOv8n)
+  with a configurable detection resolution (up to 960px) so small or
+  distant objects are picked up more reliably — critical for ADAS use
+  cases like spotting a pedestrian or oncoming vehicle around a hill
+  curve.
+- **Corrects color cast without overshooting.** A naive whole-frame
+  white balance gets skewed by the huge near-black background in
+  night scenes and overcorrects the road surface into a new
+  blue/purple tint. Color balance is now estimated only from the
+  brightest ~40% of pixels, in LAB space, and applied as a partial,
+  capped correction — a mild tint fix, not a full renormalization.
+- **Detects lane boundaries** on the enhanced frame using classical
+  Canny-edge + Hough-transform lane detection (`src/lane_detection.py`)
+  — no additional training data needed, consistent with the project's
+  lightweight, real-time design. Works best on straight/gently-curved
+  roads with visible markings; a linear line fit can't perfectly hug
+  a tight curve.
+- **Optional dedicated pothole detector.** COCO/YOLOv8 has no pothole
+  class, so this isn't a flag on the existing detector — it's a
+  separate, single-class YOLOv8 model you fine-tune yourself with
+  `src/train_pothole.py` (see [Train the Pothole Detector](#train-the-pothole-detector)
+  below). The app detects the trained weights automatically once
+  present and enables the toggle; without them, it stays off and says
+  why.
+
+---
+
 ## 🏗️ System Architecture
 
 Night Video Input
@@ -85,6 +131,21 @@ python src/train.py \
   --epochs 100 \
   --batch_size 8
 ```
+
+### Train the Pothole Detector
+Optional — the app runs fine without it, just with the pothole
+toggle disabled. COCO/YOLOv8 has no pothole class, so this fine-tunes
+a small, dedicated YOLOv8 model on a public pothole dataset rather
+than retraining the main ADAS detector.
+```bash
+pip install roboflow
+python src/train_pothole.py --roboflow_key YOUR_FREE_API_KEY
+# then: cp checkpoints/pothole_best.pt app/pothole_best.pt
+```
+Get a free API key at [app.roboflow.com](https://app.roboflow.com)
+(Settings → API Keys). Dataset:
+[Pothole Object Detection Dataset](https://public.roboflow.com/object-detection/pothole)
+(665 images, Roboflow's curated Public Datasets collection).
 
 ### Enhance a Video
 ```python

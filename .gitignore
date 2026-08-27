@@ -1,3 +1,6 @@
+# Auto-downloaded Ultralytics YOLO checkpoints (fetched at runtime, not project source)
+/yolov8*.pt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

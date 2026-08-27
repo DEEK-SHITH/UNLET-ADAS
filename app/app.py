@@ -10,10 +10,12 @@ import numpy as np
 import cv2
 import sys
 import os
+import tempfile
 from PIL import Image, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.model import build_model
+from src.enhance import scene_blend_weight, correct_color_cast
 
 # ── Load model ────────────────────────────────
 DEVICE  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -31,16 +33,23 @@ model.eval()
 
 # ── Enhancement functions ─────────────────────
 @torch.no_grad()
-def enhance_pil(pil_image):
-    arr = np.array(pil_image.resize((256,256)),
-                   dtype=np.float32) / 255.0
+def enhance_pil(pil_image, adaptive=True):
+    """
+    Curves are estimated on a small 256px proxy then applied at the
+    original resolution, avoiding the blur of a resize round-trip.
+    Adaptive blending skips over-brightening already well-lit frames.
+    """
+    arr = np.array(pil_image, dtype=np.float32) / 255.0
     t   = torch.from_numpy(arr).permute(
         2,0,1).unsqueeze(0).to(DEVICE)
-    enh, _ = model(t)
+    enh, _ = model.enhance_full_res(t, proxy_size=256)
+    if adaptive:
+        alpha = scene_blend_weight(float(arr.mean()))
+        enh   = t * (1 - alpha) + enh * alpha
     out = (enh[0].permute(1,2,0).cpu().numpy()
            * 255).clip(0,255).astype(np.uint8)
-    return Image.fromarray(out).resize(
-        pil_image.size, Image.BICUBIC)
+    out = correct_color_cast(out)
+    return Image.fromarray(out)
 
 
 def enhance_image_fn(input_image):
@@ -77,10 +86,13 @@ def enhance_video_fn(video_path, progress=gr.Progress()):
     # Limit to 10 seconds for demo
     max_frames = min(total, int(10 * fps))
 
-    out_path = '/tmp/enhanced_output.mp4'
+    out_path = os.path.join(
+        tempfile.gettempdir(), 'enhanced_output.mp4')
     fourcc   = cv2.VideoWriter_fourcc(*'mp4v')
     writer   = cv2.VideoWriter(
         out_path, fourcc, fps, (W * 2, H))
+
+    from src.enhance import enhance_frame_batch
 
     frames, origs = [], []
     count = 0
@@ -89,19 +101,15 @@ def enhance_video_fn(video_path, progress=gr.Progress()):
         ret, frame = cap.read()
         if not ret: break
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frames.append(cv2.resize(rgb, (256, 256)))
+        frames.append(rgb)
         origs.append(frame.copy())
         count += 1
 
-        if len(frames) >= 8:
-            arr = np.stack(frames).astype(np.float32)/255.0
-            t   = torch.from_numpy(arr).permute(0,3,1,2).to(DEVICE)
-            enh, _ = model(t)
-            enh_np = (enh.permute(0,2,3,1).cpu().numpy()
-                      *255).clip(0,255).astype(np.uint8)
-            for orig_bgr, enh_rgb in zip(origs, enh_np):
-                enh_full = cv2.resize(enh_rgb,(W,H))
-                enh_bgr  = cv2.cvtColor(enh_full,cv2.COLOR_RGB2BGR)
+        if len(frames) >= 4:
+            enhanced = enhance_frame_batch(
+                model, DEVICE, frames, size=256, adaptive=True)
+            for orig_bgr, enh_rgb in zip(origs, enhanced):
+                enh_bgr  = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 combined = np.hstack([orig_bgr, enh_bgr])
                 cv2.line(combined,(W,0),(W,H),(255,255,255),3)
                 cv2.putText(combined,'ORIGINAL',

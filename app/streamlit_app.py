@@ -11,6 +11,7 @@ import sys
 import os
 import io
 import time
+import tempfile
 from PIL import Image, ImageOps
 
 try:
@@ -87,59 +88,166 @@ def load_enhancer():
 
 
 @st.cache_resource
-def load_detector():
+def load_detector(weights='yolov8s.pt'):
     try:
         from ultralytics import YOLO
-        yolo = YOLO('yolov8n.pt')
+        yolo = YOLO(weights)
         return yolo, True
     except Exception:
         return None, False
 
 
+@st.cache_resource
+def load_pothole_detector():
+    """
+    Loads a dedicated single-class pothole detector, if one has been
+    trained (see src/train_pothole.py — COCO/YOLOv8 has no pothole
+    class, so this is a separate fine-tuned model, not a toggle on
+    the main ADAS detector). Returns (None, False) if the weights
+    file isn't present, so the app degrades gracefully instead of
+    crashing on a fresh checkout.
+    """
+    weights = os.path.join(
+        os.path.dirname(__file__), 'pothole_best.pt')
+    if not os.path.exists(weights):
+        return None, False
+    try:
+        from ultralytics import YOLO
+        return YOLO(weights), True
+    except Exception:
+        return None, False
+
+
 @torch.no_grad()
-def enhance_pil(model, device, pil_image):
-    orig_size = pil_image.size
-    arr = np.array(
-        pil_image.resize((256, 256)),
-        dtype=np.float32) / 255.0
-    t = torch.from_numpy(arr).permute(
+def enhance_pil(model, device, pil_image, adaptive=True):
+    """
+    Enhance at full resolution: curves are estimated on a small
+    256px proxy (cheap) then applied directly to the original
+    full-size image, so no detail is lost to a resize round-trip.
+    When adaptive=True, already well-lit (daytime) images are
+    blended back toward the original instead of being over-brightened.
+    """
+    from src.enhance import scene_blend_weight, correct_color_cast
+    arr = np.array(pil_image, dtype=np.float32) / 255.0
+    t   = torch.from_numpy(arr).permute(
         2, 0, 1).unsqueeze(0).to(device)
-    enh, _ = model(t)
+    enh, _ = model.enhance_full_res(t, proxy_size=256)
+    if adaptive:
+        alpha = scene_blend_weight(float(arr.mean()))
+        enh   = t * (1 - alpha) + enh * alpha
     out = (enh[0].permute(1, 2, 0).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(out).resize(orig_size, Image.BICUBIC)
+    out = correct_color_cast(out)
+    return Image.fromarray(out)
 
 
-def detect_and_draw(yolo, image_np, conf=0.25):
-    results = yolo(image_np, conf=conf, verbose=False)[0]
+RISK_COLORS = {
+    'HIGH':   (220,  20,  60),   # red
+    'MEDIUM': (255, 165,   0),   # amber
+    'LOW':    ( 50, 205,  50),   # green
+}
+
+
+def estimate_risk(x1, y1, x2, y2, frame_w, frame_h):
+    """
+    Rough collision-proximity estimate from box geometry alone (no
+    depth sensor / calibration available): a box that fills a large
+    fraction of the frame's height is close to the camera, and one
+    centered in the middle third of the frame is roughly in the
+    ego vehicle's path. This is a heuristic, not a measured distance
+    — good enough to flag "large and in front of you" for a demo,
+    not for real collision avoidance.
+    """
+    box_h_frac = (y2 - y1) / max(frame_h, 1)
+    cx = (x1 + x2) / 2
+    in_path = 0.2 * frame_w <= cx <= 0.8 * frame_w
+    if box_h_frac > 0.35 and in_path:
+        return 'HIGH'
+    if box_h_frac > 0.18 or (in_path and box_h_frac > 0.10):
+        return 'MEDIUM'
+    return 'LOW'
+
+
+def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
+    """Box outlined by risk level; class/ID/confidence as the label."""
+    color = RISK_COLORS[risk]
+    thickness = 3 if risk == 'HIGH' else 2
+    cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, thickness)
+    (tw, th), _ = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+    cv2.rectangle(img_bgr,
+        (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
+    cv2.putText(img_bgr, label, (x1 + 3, y1 - 4),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
+    """Single-frame detection (no temporal tracking — see track_and_draw
+    for video, which additionally assigns persistent IDs)."""
+    results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    h, w = image_np.shape[:2]
     counts = {}
     det_list = []
+    high_risk = False
     for box in results.boxes:
         cls_id = int(box.cls[0])
         if cls_id not in ADAS_CLASSES:
             continue
-        name, color = ADAS_CLASSES[cls_id]
+        name, _ = ADAS_CLASSES[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        bgr = (color[2], color[1], color[0])
-        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), bgr, 2)
-        label = f'{name} {conf_s:.0%}'
-        (tw, th), _ = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-        cv2.rectangle(img_bgr,
-            (x1, y1 - th - 8), (x1 + tw + 6, y1), bgr, -1)
-        cv2.putText(img_bgr, label, (x1 + 3, y1 - 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55, (255, 255, 255), 2, cv2.LINE_AA)
+        risk = estimate_risk(x1, y1, x2, y2, w, h)
+        high_risk = high_risk or risk == 'HIGH'
+        _draw_detection(
+            img_bgr, x1, y1, x2, y2,
+            f'{name} {conf_s:.0%} · {risk}', risk)
         counts[name] = counts.get(name, 0) + 1
         det_list.append({
-            'name': name,
-            'conf': conf_s,
-            'box': [x1, y1, x2, y2]
+            'name': name, 'conf': conf_s,
+            'box': [x1, y1, x2, y2], 'risk': risk,
         })
     ann = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return ann, det_list, counts
+    return ann, det_list, counts, high_risk
+
+
+def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
+    """
+    Like detect_and_draw, but uses YOLOv8's built-in ByteTrack
+    (persist=True keeps the tracker's internal state alive across
+    calls on the same model instance) to assign each object a stable
+    ID across frames, instead of re-detecting from scratch every
+    frame with no memory of what was seen before.
+    """
+    results = yolo.track(
+        image_np, conf=conf, imgsz=imgsz, persist=True,
+        tracker='bytetrack.yaml', verbose=False)[0]
+    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    h, w = image_np.shape[:2]
+    counts = {}
+    track_ids = set()
+    high_risk = False
+    ids = results.boxes.id
+    for i, box in enumerate(results.boxes):
+        cls_id = int(box.cls[0])
+        if cls_id not in ADAS_CLASSES:
+            continue
+        name, _ = ADAS_CLASSES[cls_id]
+        conf_s = float(box.conf[0])
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        risk = estimate_risk(x1, y1, x2, y2, w, h)
+        high_risk = high_risk or risk == 'HIGH'
+        track_id = int(ids[i]) if ids is not None else None
+        id_bit = f'#{track_id} ' if track_id is not None else ''
+        _draw_detection(
+            img_bgr, x1, y1, x2, y2,
+            f'{name} {id_bit}{conf_s:.0%} · {risk}', risk)
+        counts[name] = counts.get(name, 0) + 1
+        if track_id is not None:
+            track_ids.add(track_id)
+    ann = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return ann, counts, track_ids, high_risk
 
 
 # Header
@@ -156,9 +264,16 @@ B.E. Major Project | SJBIT Bengaluru | CSE 2025-26
 """, unsafe_allow_html=True)
 st.markdown("---")
 
+det_model_choice = st.sidebar.selectbox(
+    'Detector Model', ['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'],
+    index=1,
+    help='Larger models are more accurate but slower. '
+         'yolov8s is the default balance of speed/accuracy.')
+
 with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
-    yolo, has_yolo = load_detector()
+    yolo, has_yolo = load_detector(det_model_choice)
+    pothole_yolo, has_pothole = load_pothole_detector()
 
 # Sidebar
 st.sidebar.markdown("## System Info")
@@ -168,9 +283,14 @@ else:
     st.sidebar.info("Running on CPU")
 st.sidebar.code(status)
 if has_yolo:
-    st.sidebar.success("YOLOv8 Detection Ready")
+    st.sidebar.success(f"{det_model_choice} Detection Ready")
 else:
     st.sidebar.warning("YOLOv8 not available")
+if has_pothole:
+    st.sidebar.success("Pothole Detector Ready")
+else:
+    st.sidebar.info(
+        "Pothole Detector not trained — see src/train_pothole.py")
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 ### About
@@ -180,9 +300,11 @@ st.sidebar.markdown("""
 - Channel Attention
 - Spatial Attention
 - 8-iteration curve enhancement
+- Full-resolution curve application (no blur)
+- Scene-adaptive day/night blending
+- Bright-pixel LAB color-cast correction
+- Classical lane detection (Canny + Hough)
 - Perceptual + SSIM + Color loss
-
-**Detection:** YOLOv8n
 
 **Training:** LOL Dataset (485 pairs)
 
@@ -193,12 +315,24 @@ st.sidebar.markdown("""
 **GitHub:** [DEEK-SHITH/UNLET-ADAS](https://github.com/DEEK-SHITH/UNLET-ADAS)
 """)
 
+adaptive_mode = st.sidebar.checkbox(
+    'Adaptive Day/Night Mode', value=True,
+    help='Automatically reduces enhancement strength on '
+         'already well-lit (daytime) frames instead of '
+         'over-brightening them, while still fully enhancing '
+         'dark, night, or shaded hillside footage.')
 det_conf = st.sidebar.slider(
     'Detection Confidence', 0.1, 0.9, 0.25, 0.05)
+det_imgsz = st.sidebar.select_slider(
+    'Detection Resolution', options=[320, 480, 640, 832, 960],
+    value=640,
+    help='Higher resolution improves detection of small/far '
+         'objects (pedestrians, distant vehicles) at some speed cost.')
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab_live, tab3 = st.tabs([
     "🖼️ Image Enhancement",
     "🎬 Video Enhancement",
+    "📸 Live Camera",
     "ℹ️ About Project"
 ])
 
@@ -209,9 +343,28 @@ with tab1:
         "Upload a dark/night image. "
         "UNLET enhances it then YOLOv8 detects objects.")
 
-    use_detection = st.checkbox(
-        "Enable YOLOv8 Detection after enhancement",
-        value=True)
+    col_chk1, col_chk2, col_chk3 = st.columns(3)
+    with col_chk1:
+        use_detection = st.checkbox(
+            "Enable YOLOv8 Detection after enhancement",
+            value=True)
+    with col_chk2:
+        use_lanes = st.checkbox(
+            "Enable Lane Detection", value=True,
+            help="Classical edge-based lane-line detection (Canny + "
+                 "Hough transform) run on the enhanced frame — best on "
+                 "straight/gently-curved roads with visible markings.")
+    with col_chk3:
+        use_pothole = st.checkbox(
+            "Enable Pothole Detection", value=True,
+            disabled=not has_pothole,
+            help="Needs a trained pothole model — run "
+                 "src/train_pothole.py and drop the resulting "
+                 "pothole_best.pt into app/ to enable this."
+                 if not has_pothole else
+                 "Dedicated single-class YOLOv8 model fine-tuned on "
+                 "a public pothole dataset (COCO/YOLOv8 has no "
+                 "pothole class, so this runs as a separate pass).")
 
     uploaded = st.file_uploader(
         "Choose an image",
@@ -231,7 +384,7 @@ with tab1:
         if st.button("✨ Enhance + Detect", key='btn_img'):
             with st.spinner("Enhancing image..."):
                 t0 = time.time()
-                enh = enhance_pil(model, DEVICE, pil)
+                enh = enhance_pil(model, DEVICE, pil, adaptive=adaptive_mode)
                 ms = (time.time() - t0) * 1000
 
             enh_arr = np.array(enh)
@@ -242,11 +395,38 @@ with tab1:
             det_img = enh_arr.copy()
             det_list = []
             counts = {}
+            high_risk = False
 
             if use_detection and has_yolo and HAS_CV2:
                 with st.spinner("Running YOLOv8..."):
-                    det_img, det_list, counts = detect_and_draw(
-                        yolo, enh_arr, conf=det_conf)
+                    det_img, det_list, counts, high_risk = detect_and_draw(
+                        yolo, enh_arr, conf=det_conf, imgsz=det_imgsz)
+
+            lane_found = False
+            if use_lanes and HAS_CV2:
+                from src.lane_detection import detect_lanes, draw_lanes
+                left_line, right_line = detect_lanes(det_img)
+                lane_found = left_line is not None or right_line is not None
+                if lane_found:
+                    det_img = draw_lanes(det_img, left_line, right_line)
+
+            pothole_count = 0
+            if use_pothole and has_pothole and HAS_CV2:
+                with st.spinner("Running pothole detector..."):
+                    pot_res = pothole_yolo(
+                        det_img, conf=det_conf, imgsz=det_imgsz,
+                        verbose=False)[0]
+                    pot_bgr = cv2.cvtColor(det_img, cv2.COLOR_RGB2BGR)
+                    for box in pot_res.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        pconf = float(box.conf[0])
+                        cv2.rectangle(
+                            pot_bgr, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                        cv2.putText(
+                            pot_bgr, f'Pothole {pconf:.0%}', (x1, max(y1 - 8, 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+                        pothole_count += 1
+                    det_img = cv2.cvtColor(pot_bgr, cv2.COLOR_BGR2RGB)
 
             with col2:
                 st.subheader("✨ UNLET Enhanced")
@@ -254,14 +434,29 @@ with tab1:
                 st.caption(f"Avg brightness: {enh_b:.3f}")
 
             with col3:
-                if use_detection and det_list:
-                    st.subheader(
-                        f"🎯 Detection ({len(det_list)} objects)")
+                if (use_detection and det_list) or lane_found or pothole_count:
+                    label_bits = []
+                    if use_detection and det_list:
+                        label_bits.append(f"{len(det_list)} objects")
+                    if lane_found:
+                        label_bits.append("lanes")
+                    if pothole_count:
+                        label_bits.append(f"{pothole_count} potholes")
+                    st.subheader(f"🎯 Detection ({', '.join(label_bits)})")
                     st.image(det_img, use_container_width=True)
                 else:
                     st.subheader("🔆 AutoContrast")
                     st.image(auto, use_container_width=True)
                     st.caption(f"Avg brightness: {auto_b:.3f}")
+
+            if high_risk:
+                st.error(
+                    "⚠️ HIGH proximity risk — an object fills a large "
+                    "part of the frame in the vehicle's path. (Estimated "
+                    "from box size/position, not a measured distance.)")
+            if pothole_count:
+                st.warning(
+                    f"🕳️ {pothole_count} pothole(s) detected in the road ahead.")
 
             st.markdown("---")
             st.subheader("📊 Results")
@@ -354,9 +549,22 @@ streamlit run app/streamlit_app.py
 
         max_sec = st.slider(
             "Max seconds to process", 5, 60, 10)
+        vid_detect = st.checkbox(
+            "Run YOLOv8 detection on enhanced frames", value=True,
+            key='vid_detect')
+        vid_lanes = st.checkbox(
+            "Run lane detection on enhanced frames", value=True,
+            key='vid_lanes')
+        vid_pothole = st.checkbox(
+            "Run pothole detection on enhanced frames",
+            value=True, disabled=not has_pothole,
+            key='vid_pothole',
+            help=None if has_pothole else
+            "Needs a trained pothole model — see src/train_pothole.py")
 
         if vid_upload:
-            tmp = f'/tmp/{vid_upload.name}'
+            tmp = os.path.join(
+                tempfile.gettempdir(), vid_upload.name)
             with open(tmp, 'wb') as f:
                 f.write(vid_upload.read())
 
@@ -373,8 +581,25 @@ streamlit run app/streamlit_app.py
                 f"{tot_v/fps_v:.1f}s total")
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
-                enh_p = '/tmp/enhanced.mp4'
-                cmp_p = '/tmp/comparison.mp4'
+                from src.enhance import enhance_frame_batch
+                from src.lane_detection import detect_lanes, draw_lanes
+
+                # Reset ByteTrack state so IDs from a previous run
+                # (if any) don't bleed into this one.
+                if has_yolo and getattr(yolo, 'predictor', None):
+                    try:
+                        yolo.predictor.trackers[0].reset()
+                    except Exception:
+                        pass
+
+                all_track_ids = set()
+                all_counts = {}
+                any_high_risk = False
+
+                enh_p = os.path.join(
+                    tempfile.gettempdir(), 'enhanced.mp4')
+                cmp_p = os.path.join(
+                    tempfile.gettempdir(), 'comparison.mp4')
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 enh_w = cv2.VideoWriter(
                     enh_p, fourcc, fps_v, (W_v, H_v))
@@ -393,25 +618,50 @@ streamlit run app/streamlit_app.py
                     if not ret:
                         break
                     rgb = cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)
-                    fb.append(cv2.resize(rgb, (256, 256)))
+                    fb.append(rgb)
                     ob.append(frm.copy())
                     count += 1
 
-                    if len(fb) >= 8 or count == max_fr:
-                        arr = np.stack(fb).astype(
-                            np.float32) / 255.0
-                        t = torch.from_numpy(arr).permute(
-                            0, 3, 1, 2).to(DEVICE)
-                        with torch.no_grad():
-                            enh_t, _ = model(t)
-                        enp = (enh_t.permute(
-                            0, 2, 3, 1).cpu().numpy()
-                            * 255).clip(0, 255).astype(np.uint8)
+                    if len(fb) >= 4 or count == max_fr:
+                        # Curves are estimated on a small proxy and
+                        # applied at the original W_v x H_v resolution,
+                        # so enhanced frames stay sharp instead of
+                        # being blurred by a resize round-trip.
+                        enhanced = enhance_frame_batch(
+                            model, DEVICE, fb,
+                            size=256, adaptive=adaptive_mode)
 
-                        for orig_bgr, enh_rgb in zip(ob, enp):
-                            ef = cv2.resize(enh_rgb, (W_v, H_v))
+                        for orig_bgr, enh_rgb in zip(ob, enhanced):
+                            if vid_lanes:
+                                left_line, right_line = detect_lanes(enh_rgb)
+                                if left_line is not None or right_line is not None:
+                                    enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
+                            if vid_pothole and has_pothole:
+                                pot_res = pothole_yolo(
+                                    enh_rgb, conf=det_conf,
+                                    imgsz=det_imgsz, verbose=False)[0]
+                                for box in pot_res.boxes:
+                                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                    pconf = float(box.conf[0])
+                                    cv2.rectangle(
+                                        enh_rgb, (x1, y1), (x2, y2),
+                                        (255, 165, 0), 2)
+                                    cv2.putText(
+                                        enh_rgb, f'Pothole {pconf:.0%}',
+                                        (x1, max(y1 - 8, 10)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                        (255, 165, 0), 2)
+                            if vid_detect and has_yolo:
+                                enh_rgb, frame_counts, frame_ids, frame_risk = \
+                                    track_and_draw(
+                                        yolo, enh_rgb,
+                                        conf=det_conf, imgsz=det_imgsz)
+                                all_track_ids |= frame_ids
+                                any_high_risk = any_high_risk or frame_risk
+                                for k, v in frame_counts.items():
+                                    all_counts[k] = all_counts.get(k, 0) + v
                             eb = cv2.cvtColor(
-                                ef, cv2.COLOR_RGB2BGR)
+                                enh_rgb, cv2.COLOR_RGB2BGR)
                             cv2.putText(
                                 orig_bgr, 'ORIGINAL',
                                 (10, 35),
@@ -444,6 +694,55 @@ streamlit run app/streamlit_app.py
 
                 st.success(f"Processed {count} frames!")
 
+                if vid_detect and has_yolo:
+                    if any_high_risk:
+                        st.error(
+                            "⚠️ HIGH proximity risk detected in at least "
+                            "one frame — an object filled a large part "
+                            "of the frame in the vehicle's path.")
+
+                    st.markdown("---")
+                    st.subheader("📊 Detection Summary")
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        st.markdown(
+                            f"<div class='metric-box'>"
+                            f"<div class='metric-val'>{len(all_track_ids)}</div>"
+                            f"<div class='metric-lbl'>Unique Objects Tracked "
+                            f"(not just per-frame counts)</div>"
+                            f"</div>", unsafe_allow_html=True)
+                    with s2:
+                        st.markdown(
+                            f"<div class='metric-box'>"
+                            f"<div class='metric-val'>{sum(all_counts.values())}</div>"
+                            f"<div class='metric-lbl'>Total Detections "
+                            f"Across All Frames</div>"
+                            f"</div>", unsafe_allow_html=True)
+
+                    if all_counts and not all_track_ids:
+                        st.caption(
+                            "No object was tracked confidently enough "
+                            "across consecutive frames to earn a persistent "
+                            "ID (ByteTrack confirms a track over a few "
+                            "frames before assigning one) — the detections "
+                            "above were real but too brief/sparse in this "
+                            "clip to accumulate a stable ID.")
+
+                    if all_counts:
+                        import matplotlib.pyplot as plt
+                        fig, ax = plt.subplots(figsize=(8, 3))
+                        names = list(all_counts.keys())
+                        vals = [all_counts[n] for n in names]
+                        ax.bar(names, vals, color='#22c55e')
+                        ax.set_facecolor('#0f172a')
+                        fig.patch.set_facecolor('#0f172a')
+                        ax.tick_params(colors='#e2e8f0')
+                        ax.spines[:].set_color('#334155')
+                        for label in ax.get_xticklabels() + ax.get_yticklabels():
+                            label.set_color('#e2e8f0')
+                        ax.set_ylabel('Detections', color='#e2e8f0')
+                        st.pyplot(fig)
+
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.subheader("Enhanced Video")
@@ -465,6 +764,74 @@ streamlit run app/streamlit_app.py
                             'comparison.mp4',
                             'video/mp4',
                             use_container_width=True)
+
+# LIVE CAMERA TAB
+with tab_live:
+    st.header("Live Camera Snapshot")
+    st.markdown(
+        "Uses your browser's camera (works on a phone/laptop even "
+        "when the app is running on Streamlit Cloud, since capture "
+        "happens client-side) — take a photo and it runs through the "
+        "same enhancement + detection pipeline as the Image tab. "
+        "This is a snap-and-analyze flow, not a continuous live "
+        "video feed — Streamlit's browser camera API is snapshot-based.")
+
+    live_shot = st.camera_input("Take a photo")
+
+    if live_shot is not None:
+        pil_live = Image.open(live_shot).convert('RGB')
+        with st.spinner("Enhancing + detecting..."):
+            t0 = time.time()
+            enh_live = enhance_pil(model, DEVICE, pil_live, adaptive=adaptive_mode)
+            live_arr = np.array(enh_live)
+
+            live_high_risk = False
+            live_pothole_count = 0
+            if has_yolo and HAS_CV2:
+                live_arr, live_dets, _, live_high_risk = detect_and_draw(
+                    yolo, live_arr, conf=det_conf, imgsz=det_imgsz)
+            else:
+                live_dets = []
+
+            if HAS_CV2:
+                from src.lane_detection import detect_lanes, draw_lanes
+                l_left, l_right = detect_lanes(live_arr)
+                if l_left is not None or l_right is not None:
+                    live_arr = draw_lanes(live_arr, l_left, l_right)
+
+            if has_pothole and HAS_CV2:
+                pot_res = pothole_yolo(
+                    live_arr, conf=det_conf, imgsz=det_imgsz, verbose=False)[0]
+                pot_bgr = cv2.cvtColor(live_arr, cv2.COLOR_RGB2BGR)
+                for box in pot_res.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    pconf = float(box.conf[0])
+                    cv2.rectangle(pot_bgr, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                    cv2.putText(
+                        pot_bgr, f'Pothole {pconf:.0%}', (x1, max(y1 - 8, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+                    live_pothole_count += 1
+                live_arr = cv2.cvtColor(pot_bgr, cv2.COLOR_BGR2RGB)
+            ms_live = (time.time() - t0) * 1000
+
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            st.subheader("📷 Captured")
+            st.image(pil_live, use_container_width=True)
+        with col_l2:
+            st.subheader(f"✨ Enhanced + Detected ({ms_live:.0f}ms)")
+            st.image(live_arr, use_container_width=True)
+
+        if live_high_risk:
+            st.error("⚠️ HIGH proximity risk — an object fills a large "
+                      "part of the frame in the vehicle's path.")
+        if live_pothole_count:
+            st.warning(f"🕳️ {live_pothole_count} pothole(s) detected.")
+        if live_dets:
+            cols = st.columns(min(len(live_dets), 4))
+            for i, d in enumerate(live_dets):
+                cols[i % len(cols)].metric(
+                    d['name'], f"{d['conf']:.0%}", d['risk'])
 
 # ABOUT TAB
 with tab3:
@@ -499,13 +866,19 @@ with tab3:
     st.markdown("""
 ### System Architecture
 ```
-Night Video Input
+Video Input (Night / Hilly / Day)
       ↓
-Zero-DCE++ CBAM Enhancement
+Zero-DCE++ CBAM Curve Estimation (low-res proxy)
       ↓
-YOLOv8n Detection
+Full-Resolution Curve Application (no blur)
       ↓
-Enhanced Output + Detections
+Scene-Adaptive Blend (skips over-brightening daylight)
+      ↓
+Bright-Pixel LAB Color-Cast Correction
+      ↓
+Lane Detection (Canny + Hough)  +  YOLOv8 Detection (n/s/m selectable)
+      ↓
+Enhanced Output + Lanes + Detections
 ```
     """)
     st.markdown("---")
