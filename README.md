@@ -37,6 +37,33 @@ clearly visible for ADAS computer vision pipelines.
 
 ---
 
+## 🆙 Sharper Output & Better Detection
+
+Earlier versions resized every frame down to a small square for the
+network and upscaled it back with a sharpening filter — that
+resize round-trip was the source of the blurry output. The pipeline
+now:
+
+- **Applies enhancement curves at full resolution.** Zero-DCE++
+  estimates its per-pixel curves on a small 256px proxy (cheap and
+  robust), but those smooth curve maps are then upsampled and applied
+  directly to the original frame — no pixel content is ever
+  downscaled, so fine detail and edges (lane markings, distant
+  vehicles, pedestrians) stay sharp.
+- **Adapts to scene brightness automatically.** A blend factor based
+  on average luminance gives full enhancement to dark scenes (night,
+  tunnels, shaded hillside bends) and fades enhancement out for
+  already well-lit daytime frames, so the same pipeline helps at
+  night, in hilly terrain with sudden shadow/light changes, **and**
+  during the day without washing anything out.
+- **Uses a stronger default detector** (YOLOv8s instead of YOLOv8n)
+  with a configurable detection resolution (up to 960px) so small or
+  distant objects are picked up more reliably — critical for ADAS use
+  cases like spotting a pedestrian or oncoming vehicle around a hill
+  curve.
+
+---
+
 ## 🏗️ System Architecture
 
 Night Video Input

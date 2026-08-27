@@ -12,6 +12,7 @@ Architecture:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ChannelAttention(nn.Module):
@@ -105,7 +106,8 @@ class ZeroDCECBAM(nn.Module):
                       3, padding=1, bias=False),
             nn.Tanh())
 
-    def forward(self, x):
+    def estimate_curves(self, x):
+        """Predict per-pixel enhancement curves for input x (any resolution)."""
         # Encoder
         e1 = self.cb1(self.e1(x))
         e2 = self.cb2(self.e2(e1))
@@ -117,18 +119,41 @@ class ZeroDCECBAM(nn.Module):
         d2 = self.cb6(self.d2(torch.cat([d3, e2], 1)))
         d1 = self.cb7(self.d1(torch.cat([d2, e1], 1)))
 
-        # Predict curve parameters
-        curves = self.curve_out(d1)
+        return self.curve_out(d1)
 
-        # Apply iterative enhancement
+    def apply_curves(self, x, curves):
+        """Apply the iterative curve formula to x using given curve maps."""
         enhanced = x
         for i in range(self.num_iters):
             A        = curves[:, i*3:(i+1)*3]
             enhanced = torch.clamp(
                 enhanced + A * enhanced * (1 - enhanced),
                 0, 1)
+        return enhanced
 
+    def forward(self, x):
+        curves   = self.estimate_curves(x)
+        enhanced = self.apply_curves(x, curves)
         return enhanced, curves
+
+    @torch.no_grad()
+    def enhance_full_res(self, x_full, proxy_size=256):
+        """
+        Estimate curves on a small downsized proxy (cheap, robust to
+        any input size) then apply them directly to the full-resolution
+        input. Curve maps are smooth by construction (smoothness_loss
+        during training penalizes high-frequency curves), so upsampling
+        them introduces no blur — unlike resizing actual pixel content
+        down and back up, which is what causes soft/blurry output.
+        """
+        proxy       = F.interpolate(
+            x_full, size=(proxy_size, proxy_size),
+            mode='bilinear', align_corners=False)
+        curves      = self.estimate_curves(proxy)
+        curves_full = F.interpolate(
+            curves, size=x_full.shape[2:],
+            mode='bilinear', align_corners=False)
+        return self.apply_curves(x_full, curves_full), curves_full
 
 
 def build_model(num_iters=8, channels=32):

@@ -2,12 +2,23 @@
 UNLET-ADAS: Enhancement Functions
 ===================================
 Core functions for single image and batch video enhancement.
+
+Curves are estimated on a small proxy resolution for speed, then
+applied directly to the full-resolution frame (see
+model.enhance_full_res). This avoids the old resize-down/resize-up
+round trip that softened fine detail and hurt detection of small or
+distant objects.
+
+Enhancement strength is also scene-adaptive: dark frames (night,
+tunnels, shaded hillside roads) get full enhancement, while
+already well-lit frames (daylight) are left close to untouched so
+the system helps at night and in hilly terrain without washing out
+or over-brightening daytime footage.
 """
 
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
 from src.model import build_model
@@ -26,27 +37,44 @@ def load_enhancer(weights_path, device='cuda'):
     return model, device
 
 
+def scene_blend_weight(luminance, dark_thresh=0.35, bright_thresh=0.55):
+    """
+    Blend factor between original and enhanced frame based on
+    scene brightness (0..1 average luminance):
+      - <= dark_thresh   : 1.0 (full enhancement — night / tunnel / shade)
+      - >= bright_thresh : 0.0 (no enhancement — daylight)
+      - in between       : smooth ramp (dusk, hillside shadow patches)
+    """
+    if luminance <= dark_thresh:
+        return 1.0
+    if luminance >= bright_thresh:
+        return 0.0
+    return (bright_thresh - luminance) / (bright_thresh - dark_thresh)
+
+
 @torch.no_grad()
 def enhance_image(model, device, image_path,
-                  size=256, output_path=None):
+                  size=256, output_path=None, adaptive=True):
     """
-    Enhance a single low-light image.
+    Enhance a single low-light image at full resolution.
     Returns PIL Image of enhanced result.
     """
     orig = Image.open(image_path).convert('RGB')
     W, H = orig.size
 
-    resized = orig.resize((size, size), Image.BICUBIC)
-    arr     = np.array(resized, dtype=np.float32) / 255.0
-    t       = torch.from_numpy(arr).permute(
+    arr    = np.array(orig, dtype=np.float32) / 255.0
+    t_full = torch.from_numpy(arr).permute(
         2, 0, 1).unsqueeze(0).to(device)
 
-    enh, _ = model(t)
-    enh_np = (enh[0].permute(1, 2, 0).cpu().numpy()
-              * 255).clip(0, 255).astype(np.uint8)
+    enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
 
-    result = Image.fromarray(enh_np).resize(
-        (W, H), Image.BICUBIC)
+    if adaptive:
+        alpha    = scene_blend_weight(float(arr.mean()))
+        enh_full = t_full * (1 - alpha) + enh_full * alpha
+
+    enh_np = (enh_full[0].permute(1, 2, 0).cpu().numpy()
+              * 255).clip(0, 255).astype(np.uint8)
+    result = Image.fromarray(enh_np)
 
     if output_path:
         result.save(output_path)
@@ -56,31 +84,32 @@ def enhance_image(model, device, image_path,
 
 
 @torch.no_grad()
-def enhance_frame_batch(model, device, frames_rgb, size=512):
+def enhance_frame_batch(model, device, frames_rgb,
+                        size=256, adaptive=True):
     """
-    Enhance a batch of video frames.
-    Uses size=512 for better quality on HD video.
-    Input : list of (H,W,3) uint8 RGB arrays
-    Output: list of (H,W,3) uint8 RGB arrays
+    Enhance a batch of full-resolution video frames.
+    Input : list of (H,W,3) uint8 RGB arrays, all the same size
+    Output: list of (H,W,3) uint8 RGB arrays at the same resolution
     """
-    orig_sizes = [(f.shape[1], f.shape[0]) for f in frames_rgb]
-
-    # Use higher resolution for less blur
-    resized = np.stack([
-        cv2.resize(f, (size, size),
-                   interpolation=cv2.INTER_LANCZOS4)
-        for f in frames_rgb
-    ]).astype(np.float32) / 255.0
-
-    t      = torch.from_numpy(resized).permute(
+    arr_full = np.stack(frames_rgb).astype(np.float32) / 255.0
+    t_full   = torch.from_numpy(arr_full).permute(
         0, 3, 1, 2).to(device)
-    enh, _ = model(t)
-    out    = (enh.permute(0, 2, 3, 1).cpu().numpy()
-              * 255).clip(0, 255).astype(np.uint8)
+
+    enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
+
+    if adaptive:
+        lum    = t_full.mean(dim=[1, 2, 3])
+        alphas = torch.tensor(
+            [scene_blend_weight(float(l)) for l in lum],
+            device=device).view(-1, 1, 1, 1)
+        enh_full = t_full * (1 - alphas) + enh_full * alphas
+
+    out = (enh_full.permute(0, 2, 3, 1).cpu().numpy()
+           * 255).clip(0, 255).astype(np.uint8)
 
     results = []
-    for i, frame in enumerate(out):
-        # Color balance
+    for frame in out:
+        # Gray-world color balance to correct residual tint
         f = frame.astype(np.float32)
         r = f[:,:,0].mean()
         g = f[:,:,1].mean()
@@ -89,31 +118,18 @@ def enhance_frame_batch(model, device, frames_rgb, size=512):
         if r > 0: f[:,:,0] = f[:,:,0] * (avg / r)
         if g > 0: f[:,:,1] = f[:,:,1] * (avg / g)
         if b > 0: f[:,:,2] = f[:,:,2] * (avg / b)
-        frame = np.clip(f, 0, 255).astype(np.uint8)
-
-        # Resize back with high quality
-        result = cv2.resize(
-            frame, orig_sizes[i],
-            interpolation=cv2.INTER_LANCZOS4)
-
-        # Slight sharpening to reduce upscale blur
-        kernel = np.array([
-            [ 0, -0.5,  0],
-            [-0.5,  3, -0.5],
-            [ 0, -0.5,  0]])
-        sharp  = cv2.filter2D(result, -1, kernel)
-        result = np.clip(sharp, 0, 255).astype(np.uint8)
-
-        results.append(result)
+        results.append(np.clip(f, 0, 255).astype(np.uint8))
 
     return results
+
 
 def enhance_video(model, device,
                   input_path, output_path,
                   original_path=None,
                   comparison_path=None,
                   batch_size=4,
-                  size=512):
+                  size=256,
+                  adaptive=True):
     """
     Enhance a full video.
 
@@ -155,7 +171,7 @@ def enhance_video(model, device,
 
     def flush_buffer(frames_rgb, origs_bgr):
         enhanced = enhance_frame_batch(
-            model, device, frames_rgb, size)
+            model, device, frames_rgb, size, adaptive)
         for orig_bgr, enh_rgb in zip(origs_bgr, enhanced):
             enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
             enh_writer.write(enh_bgr)

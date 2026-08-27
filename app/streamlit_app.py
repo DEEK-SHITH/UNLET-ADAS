@@ -87,31 +87,39 @@ def load_enhancer():
 
 
 @st.cache_resource
-def load_detector():
+def load_detector(weights='yolov8s.pt'):
     try:
         from ultralytics import YOLO
-        yolo = YOLO('yolov8n.pt')
+        yolo = YOLO(weights)
         return yolo, True
     except Exception:
         return None, False
 
 
 @torch.no_grad()
-def enhance_pil(model, device, pil_image):
-    orig_size = pil_image.size
-    arr = np.array(
-        pil_image.resize((256, 256)),
-        dtype=np.float32) / 255.0
-    t = torch.from_numpy(arr).permute(
+def enhance_pil(model, device, pil_image, adaptive=True):
+    """
+    Enhance at full resolution: curves are estimated on a small
+    256px proxy (cheap) then applied directly to the original
+    full-size image, so no detail is lost to a resize round-trip.
+    When adaptive=True, already well-lit (daytime) images are
+    blended back toward the original instead of being over-brightened.
+    """
+    from src.enhance import scene_blend_weight
+    arr = np.array(pil_image, dtype=np.float32) / 255.0
+    t   = torch.from_numpy(arr).permute(
         2, 0, 1).unsqueeze(0).to(device)
-    enh, _ = model(t)
+    enh, _ = model.enhance_full_res(t, proxy_size=256)
+    if adaptive:
+        alpha = scene_blend_weight(float(arr.mean()))
+        enh   = t * (1 - alpha) + enh * alpha
     out = (enh[0].permute(1, 2, 0).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(out).resize(orig_size, Image.BICUBIC)
+    return Image.fromarray(out)
 
 
-def detect_and_draw(yolo, image_np, conf=0.25):
-    results = yolo(image_np, conf=conf, verbose=False)[0]
+def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
+    results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     counts = {}
     det_list = []
@@ -156,9 +164,15 @@ B.E. Major Project | SJBIT Bengaluru | CSE 2025-26
 """, unsafe_allow_html=True)
 st.markdown("---")
 
+det_model_choice = st.sidebar.selectbox(
+    'Detector Model', ['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'],
+    index=1,
+    help='Larger models are more accurate but slower. '
+         'yolov8s is the default balance of speed/accuracy.')
+
 with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
-    yolo, has_yolo = load_detector()
+    yolo, has_yolo = load_detector(det_model_choice)
 
 # Sidebar
 st.sidebar.markdown("## System Info")
@@ -168,7 +182,7 @@ else:
     st.sidebar.info("Running on CPU")
 st.sidebar.code(status)
 if has_yolo:
-    st.sidebar.success("YOLOv8 Detection Ready")
+    st.sidebar.success(f"{det_model_choice} Detection Ready")
 else:
     st.sidebar.warning("YOLOv8 not available")
 st.sidebar.markdown("---")
@@ -180,9 +194,9 @@ st.sidebar.markdown("""
 - Channel Attention
 - Spatial Attention
 - 8-iteration curve enhancement
+- Full-resolution curve application (no blur)
+- Scene-adaptive day/night blending
 - Perceptual + SSIM + Color loss
-
-**Detection:** YOLOv8n
 
 **Training:** LOL Dataset (485 pairs)
 
@@ -193,8 +207,19 @@ st.sidebar.markdown("""
 **GitHub:** [DEEK-SHITH/UNLET-ADAS](https://github.com/DEEK-SHITH/UNLET-ADAS)
 """)
 
+adaptive_mode = st.sidebar.checkbox(
+    'Adaptive Day/Night Mode', value=True,
+    help='Automatically reduces enhancement strength on '
+         'already well-lit (daytime) frames instead of '
+         'over-brightening them, while still fully enhancing '
+         'dark, night, or shaded hillside footage.')
 det_conf = st.sidebar.slider(
     'Detection Confidence', 0.1, 0.9, 0.25, 0.05)
+det_imgsz = st.sidebar.select_slider(
+    'Detection Resolution', options=[320, 480, 640, 832, 960],
+    value=640,
+    help='Higher resolution improves detection of small/far '
+         'objects (pedestrians, distant vehicles) at some speed cost.')
 
 tab1, tab2, tab3 = st.tabs([
     "🖼️ Image Enhancement",
@@ -231,7 +256,7 @@ with tab1:
         if st.button("✨ Enhance + Detect", key='btn_img'):
             with st.spinner("Enhancing image..."):
                 t0 = time.time()
-                enh = enhance_pil(model, DEVICE, pil)
+                enh = enhance_pil(model, DEVICE, pil, adaptive=adaptive_mode)
                 ms = (time.time() - t0) * 1000
 
             enh_arr = np.array(enh)
@@ -246,7 +271,7 @@ with tab1:
             if use_detection and has_yolo and HAS_CV2:
                 with st.spinner("Running YOLOv8..."):
                     det_img, det_list, counts = detect_and_draw(
-                        yolo, enh_arr, conf=det_conf)
+                        yolo, enh_arr, conf=det_conf, imgsz=det_imgsz)
 
             with col2:
                 st.subheader("✨ UNLET Enhanced")
@@ -354,6 +379,9 @@ streamlit run app/streamlit_app.py
 
         max_sec = st.slider(
             "Max seconds to process", 5, 60, 10)
+        vid_detect = st.checkbox(
+            "Run YOLOv8 detection on enhanced frames", value=True,
+            key='vid_detect')
 
         if vid_upload:
             tmp = f'/tmp/{vid_upload.name}'
@@ -373,6 +401,8 @@ streamlit run app/streamlit_app.py
                 f"{tot_v/fps_v:.1f}s total")
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
+                from src.enhance import enhance_frame_batch
+
                 enh_p = '/tmp/enhanced.mp4'
                 cmp_p = '/tmp/comparison.mp4'
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -393,25 +423,26 @@ streamlit run app/streamlit_app.py
                     if not ret:
                         break
                     rgb = cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)
-                    fb.append(cv2.resize(rgb, (256, 256)))
+                    fb.append(rgb)
                     ob.append(frm.copy())
                     count += 1
 
-                    if len(fb) >= 8 or count == max_fr:
-                        arr = np.stack(fb).astype(
-                            np.float32) / 255.0
-                        t = torch.from_numpy(arr).permute(
-                            0, 3, 1, 2).to(DEVICE)
-                        with torch.no_grad():
-                            enh_t, _ = model(t)
-                        enp = (enh_t.permute(
-                            0, 2, 3, 1).cpu().numpy()
-                            * 255).clip(0, 255).astype(np.uint8)
+                    if len(fb) >= 4 or count == max_fr:
+                        # Curves are estimated on a small proxy and
+                        # applied at the original W_v x H_v resolution,
+                        # so enhanced frames stay sharp instead of
+                        # being blurred by a resize round-trip.
+                        enhanced = enhance_frame_batch(
+                            model, DEVICE, fb,
+                            size=256, adaptive=adaptive_mode)
 
-                        for orig_bgr, enh_rgb in zip(ob, enp):
-                            ef = cv2.resize(enh_rgb, (W_v, H_v))
+                        for orig_bgr, enh_rgb in zip(ob, enhanced):
+                            if vid_detect and has_yolo:
+                                enh_rgb, _, _ = detect_and_draw(
+                                    yolo, enh_rgb,
+                                    conf=det_conf, imgsz=det_imgsz)
                             eb = cv2.cvtColor(
-                                ef, cv2.COLOR_RGB2BGR)
+                                enh_rgb, cv2.COLOR_RGB2BGR)
                             cv2.putText(
                                 orig_bgr, 'ORIGINAL',
                                 (10, 35),
@@ -499,11 +530,15 @@ with tab3:
     st.markdown("""
 ### System Architecture
 ```
-Night Video Input
+Video Input (Night / Hilly / Day)
       ↓
-Zero-DCE++ CBAM Enhancement
+Zero-DCE++ CBAM Curve Estimation (low-res proxy)
       ↓
-YOLOv8n Detection
+Full-Resolution Curve Application (no blur)
+      ↓
+Scene-Adaptive Blend (skips over-brightening daylight)
+      ↓
+YOLOv8 Detection (n/s/m selectable)
       ↓
 Enhanced Output + Detections
 ```
