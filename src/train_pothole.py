@@ -42,15 +42,19 @@ sys.path.insert(0, ROOT)
 
 
 def download_dataset(api_key, dest_dir):
-    """Download the Roboflow public pothole dataset in YOLOv8 format."""
+    """
+    Download the Roboflow public pothole dataset in YOLOv8 format.
+    This is the same 665-image Chitholian pothole dataset listed at
+    public.roboflow.com/object-detection/pothole, mirrored on
+    Universe under Roboflow's own account.
+    """
     from roboflow import Roboflow
 
     os.makedirs(dest_dir, exist_ok=True)
     rf = Roboflow(api_key=api_key)
-    project = rf.workspace('roboflow-100').project('pothole-detection-in-images')
-    # Fallback: the canonical public dataset workspace/slug can change
-    # over time on Roboflow Universe. If this project handle 404s,
-    # open https://public.roboflow.com/object-detection/pothole,
+    project = rf.workspace('brad-dwyer').project('pothole-voxrl')
+    # Fallback: if this ever 404s (Universe slugs can be renamed),
+    # open https://universe.roboflow.com/brad-dwyer/pothole-voxrl,
     # click "Download Dataset" -> YOLOv8, and copy the exact
     # rf.workspace(...).project(...) snippet Roboflow generates there.
     version = project.version(1)
