@@ -11,6 +11,7 @@ import sys
 import os
 import io
 import time
+import tempfile
 from PIL import Image, ImageOps
 
 try:
@@ -384,7 +385,8 @@ streamlit run app/streamlit_app.py
             key='vid_detect')
 
         if vid_upload:
-            tmp = f'/tmp/{vid_upload.name}'
+            tmp = os.path.join(
+                tempfile.gettempdir(), vid_upload.name)
             with open(tmp, 'wb') as f:
                 f.write(vid_upload.read())
 
@@ -403,8 +405,10 @@ streamlit run app/streamlit_app.py
             if st.button("🚀 Enhance Video", key='btn_vid'):
                 from src.enhance import enhance_frame_batch
 
-                enh_p = '/tmp/enhanced.mp4'
-                cmp_p = '/tmp/comparison.mp4'
+                enh_p = os.path.join(
+                    tempfile.gettempdir(), 'enhanced.mp4')
+                cmp_p = os.path.join(
+                    tempfile.gettempdir(), 'comparison.mp4')
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 enh_w = cv2.VideoWriter(
                     enh_p, fourcc, fps_v, (W_v, H_v))

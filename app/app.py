@@ -10,6 +10,7 @@ import numpy as np
 import cv2
 import sys
 import os
+import tempfile
 from PIL import Image, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -84,7 +85,8 @@ def enhance_video_fn(video_path, progress=gr.Progress()):
     # Limit to 10 seconds for demo
     max_frames = min(total, int(10 * fps))
 
-    out_path = '/tmp/enhanced_output.mp4'
+    out_path = os.path.join(
+        tempfile.gettempdir(), 'enhanced_output.mp4')
     fourcc   = cv2.VideoWriter_fourcc(*'mp4v')
     writer   = cv2.VideoWriter(
         out_path, fourcc, fps, (W * 2, H))
