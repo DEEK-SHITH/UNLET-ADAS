@@ -985,7 +985,19 @@ with tab_live:
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration={"iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]}]},
-                media_stream_constraints={"video": True, "audio": False},
+                media_stream_constraints={
+                    # Without an explicit resolution request, browsers
+                    # often default to a low capture size (e.g.
+                    # 640x480) and the wide side-by-side display then
+                    # stretches it — read as blur. Ask for 720p; the
+                    # browser falls back to its max supported size if
+                    # the camera can't do this.
+                    "video": {
+                        "width": {"ideal": 1280},
+                        "height": {"ideal": 720},
+                    },
+                    "audio": False,
+                },
                 video_frame_callback=_live_video_frame_callback,
                 async_processing=True,
             )
