@@ -15,7 +15,7 @@ from PIL import Image, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.model import build_model
-from src.enhance import scene_blend_weight
+from src.enhance import scene_blend_weight, correct_color_cast
 
 # ── Load model ────────────────────────────────
 DEVICE  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -48,6 +48,7 @@ def enhance_pil(pil_image, adaptive=True):
         enh   = t * (1 - alpha) + enh * alpha
     out = (enh[0].permute(1,2,0).cpu().numpy()
            * 255).clip(0,255).astype(np.uint8)
+    out = correct_color_cast(out)
     return Image.fromarray(out)
 
 

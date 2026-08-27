@@ -52,6 +52,38 @@ def scene_blend_weight(luminance, dark_thresh=0.35, bright_thresh=0.55):
     return (bright_thresh - luminance) / (bright_thresh - dark_thresh)
 
 
+def correct_color_cast(frame_uint8, strength=0.6, lum_pctl=60, max_shift=18):
+    """
+    Mild white-balance correction in LAB space, using only the
+    brightest ~40% of pixels to estimate the tint.
+
+    Plain whole-image gray-world fails on night frames: the huge
+    near-black background (sky, unlit distance) dominates the color
+    statistics, so the correction computed from it gets applied to
+    the bright, informative road surface too — overshooting into a
+    new (often blue/purple) cast instead of removing the original
+    one. Estimating the tint from just the well-lit pixels, shifting
+    only LAB's a/b (color) channels partially back toward neutral
+    (L, i.e. brightness, is left untouched), and capping the shift
+    keeps this a gentle tint fix rather than a full renormalization.
+    """
+    lab = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    L, A, B = lab[:,:,0], lab[:,:,1], lab[:,:,2]
+
+    mask = L >= np.percentile(L, lum_pctl)
+    if mask.sum() < 50:
+        mask = np.ones_like(L, dtype=bool)
+
+    a_dev = A[mask].mean() - 128.0
+    b_dev = B[mask].mean() - 128.0
+    a_shift = np.clip(-a_dev * strength, -max_shift, max_shift)
+    b_shift = np.clip(-b_dev * strength, -max_shift, max_shift)
+
+    lab[:,:,1] = np.clip(A + a_shift, 0, 255)
+    lab[:,:,2] = np.clip(B + b_shift, 0, 255)
+    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+
 @torch.no_grad()
 def enhance_image(model, device, image_path,
                   size=256, output_path=None, adaptive=True):
@@ -74,6 +106,7 @@ def enhance_image(model, device, image_path,
 
     enh_np = (enh_full[0].permute(1, 2, 0).cpu().numpy()
               * 255).clip(0, 255).astype(np.uint8)
+    enh_np = correct_color_cast(enh_np)
     result = Image.fromarray(enh_np)
 
     if output_path:
@@ -107,20 +140,7 @@ def enhance_frame_batch(model, device, frames_rgb,
     out = (enh_full.permute(0, 2, 3, 1).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
 
-    results = []
-    for frame in out:
-        # Gray-world color balance to correct residual tint
-        f = frame.astype(np.float32)
-        r = f[:,:,0].mean()
-        g = f[:,:,1].mean()
-        b = f[:,:,2].mean()
-        avg = (r + g + b) / 3.0
-        if r > 0: f[:,:,0] = f[:,:,0] * (avg / r)
-        if g > 0: f[:,:,1] = f[:,:,1] * (avg / g)
-        if b > 0: f[:,:,2] = f[:,:,2] * (avg / b)
-        results.append(np.clip(f, 0, 255).astype(np.uint8))
-
-    return results
+    return [correct_color_cast(frame) for frame in out]
 
 
 def enhance_video(model, device,

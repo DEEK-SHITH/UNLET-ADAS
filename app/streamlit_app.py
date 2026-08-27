@@ -106,7 +106,7 @@ def enhance_pil(model, device, pil_image, adaptive=True):
     When adaptive=True, already well-lit (daytime) images are
     blended back toward the original instead of being over-brightened.
     """
-    from src.enhance import scene_blend_weight
+    from src.enhance import scene_blend_weight, correct_color_cast
     arr = np.array(pil_image, dtype=np.float32) / 255.0
     t   = torch.from_numpy(arr).permute(
         2, 0, 1).unsqueeze(0).to(device)
@@ -116,6 +116,7 @@ def enhance_pil(model, device, pil_image, adaptive=True):
         enh   = t * (1 - alpha) + enh * alpha
     out = (enh[0].permute(1, 2, 0).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
+    out = correct_color_cast(out)
     return Image.fromarray(out)
 
 
@@ -197,6 +198,8 @@ st.sidebar.markdown("""
 - 8-iteration curve enhancement
 - Full-resolution curve application (no blur)
 - Scene-adaptive day/night blending
+- Bright-pixel LAB color-cast correction
+- Classical lane detection (Canny + Hough)
 - Perceptual + SSIM + Color loss
 
 **Training:** LOL Dataset (485 pairs)
@@ -235,9 +238,17 @@ with tab1:
         "Upload a dark/night image. "
         "UNLET enhances it then YOLOv8 detects objects.")
 
-    use_detection = st.checkbox(
-        "Enable YOLOv8 Detection after enhancement",
-        value=True)
+    col_chk1, col_chk2 = st.columns(2)
+    with col_chk1:
+        use_detection = st.checkbox(
+            "Enable YOLOv8 Detection after enhancement",
+            value=True)
+    with col_chk2:
+        use_lanes = st.checkbox(
+            "Enable Lane Detection", value=True,
+            help="Classical edge-based lane-line detection (Canny + "
+                 "Hough transform) run on the enhanced frame — best on "
+                 "straight/gently-curved roads with visible markings.")
 
     uploaded = st.file_uploader(
         "Choose an image",
@@ -274,15 +285,27 @@ with tab1:
                     det_img, det_list, counts = detect_and_draw(
                         yolo, enh_arr, conf=det_conf, imgsz=det_imgsz)
 
+            lane_found = False
+            if use_lanes and HAS_CV2:
+                from src.lane_detection import detect_lanes, draw_lanes
+                left_line, right_line = detect_lanes(det_img)
+                lane_found = left_line is not None or right_line is not None
+                if lane_found:
+                    det_img = draw_lanes(det_img, left_line, right_line)
+
             with col2:
                 st.subheader("✨ UNLET Enhanced")
                 st.image(enh, use_container_width=True)
                 st.caption(f"Avg brightness: {enh_b:.3f}")
 
             with col3:
-                if use_detection and det_list:
-                    st.subheader(
-                        f"🎯 Detection ({len(det_list)} objects)")
+                if (use_detection and det_list) or lane_found:
+                    label_bits = []
+                    if use_detection and det_list:
+                        label_bits.append(f"{len(det_list)} objects")
+                    if lane_found:
+                        label_bits.append("lanes")
+                    st.subheader(f"🎯 Detection ({', '.join(label_bits)})")
                     st.image(det_img, use_container_width=True)
                 else:
                     st.subheader("🔆 AutoContrast")
@@ -383,6 +406,9 @@ streamlit run app/streamlit_app.py
         vid_detect = st.checkbox(
             "Run YOLOv8 detection on enhanced frames", value=True,
             key='vid_detect')
+        vid_lanes = st.checkbox(
+            "Run lane detection on enhanced frames", value=True,
+            key='vid_lanes')
 
         if vid_upload:
             tmp = os.path.join(
@@ -404,6 +430,7 @@ streamlit run app/streamlit_app.py
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
                 from src.enhance import enhance_frame_batch
+                from src.lane_detection import detect_lanes, draw_lanes
 
                 enh_p = os.path.join(
                     tempfile.gettempdir(), 'enhanced.mp4')
@@ -441,6 +468,10 @@ streamlit run app/streamlit_app.py
                             size=256, adaptive=adaptive_mode)
 
                         for orig_bgr, enh_rgb in zip(ob, enhanced):
+                            if vid_lanes:
+                                left_line, right_line = detect_lanes(enh_rgb)
+                                if left_line is not None or right_line is not None:
+                                    enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
                             if vid_detect and has_yolo:
                                 enh_rgb, _, _ = detect_and_draw(
                                     yolo, enh_rgb,
@@ -542,9 +573,11 @@ Full-Resolution Curve Application (no blur)
       ↓
 Scene-Adaptive Blend (skips over-brightening daylight)
       ↓
-YOLOv8 Detection (n/s/m selectable)
+Bright-Pixel LAB Color-Cast Correction
       ↓
-Enhanced Output + Detections
+Lane Detection (Canny + Hough)  +  YOLOv8 Detection (n/s/m selectable)
+      ↓
+Enhanced Output + Lanes + Detections
 ```
     """)
     st.markdown("---")
