@@ -126,19 +126,23 @@ def load_pothole_detector():
 
 
 @torch.no_grad()
-def enhance_pil(model, device, pil_image, adaptive=True):
+def enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
     """
     Enhance at full resolution: curves are estimated on a small
-    256px proxy (cheap) then applied directly to the original
-    full-size image, so no detail is lost to a resize round-trip.
-    When adaptive=True, already well-lit (daytime) images are
-    blended back toward the original instead of being over-brightened.
+    proxy (cheap — this is the only part that runs the network's
+    conv layers) then applied directly to the original full-size
+    image (cheap elementwise math), so no detail is lost to a resize
+    round-trip. When adaptive=True, already well-lit (daytime) images
+    are blended back toward the original instead of being
+    over-brightened. A smaller proxy_size trades a little curve
+    precision for speed — useful for live/real-time use where the
+    network runs every frame; the default 256 is for one-shot images.
     """
     from src.enhance import scene_blend_weight, correct_color_cast
     arr = np.array(pil_image, dtype=np.float32) / 255.0
     t   = torch.from_numpy(arr).permute(
         2, 0, 1).unsqueeze(0).to(device)
-    enh, _ = model.enhance_full_res(t, proxy_size=256)
+    enh, _ = model.enhance_full_res(t, proxy_size=proxy_size)
     if adaptive:
         alpha = scene_blend_weight(float(arr.mean()))
         enh   = t * (1 - alpha) + enh * alpha
@@ -953,13 +957,27 @@ with tab_live:
                 help="Off by default — object detection roughly halves "
                      "the frame rate again on top of enhancement. Turn "
                      "it on if your machine can keep up.")
+            live_quality = st.radio(
+                "Live quality", ["⚡ Fast (480p)", "🔍 Sharp (720p)"],
+                horizontal=True, index=0, key='live_quality',
+                help="A CPU has to run the enhancement network on "
+                     "every single frame in real time, so there's a "
+                     "direct trade-off between resolution and how "
+                     "smooth the stream feels. Start with Fast; try "
+                     "Sharp only if it still feels smooth enough.")
+            _live_res = (1280, 720) if 'Sharp' in live_quality else (854, 480)
 
             def _live_video_frame_callback(frame):
                 img_bgr = frame.to_ndarray(format="bgr24")
                 rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                # A small proxy is plenty for curve estimation (curves
+                # are smooth by design) and is the one part of this
+                # pipeline that runs the network's conv layers every
+                # frame — keeping it small here is what actually saves
+                # time, independent of the capture resolution above.
                 enh_rgb = np.array(enhance_pil(
                     model, DEVICE, Image.fromarray(rgb),
-                    adaptive=adaptive_mode))
+                    adaptive=adaptive_mode, proxy_size=128))
 
                 if live_stream_detect and has_yolo:
                     # Capped well below the sidebar's det_imgsz — live
@@ -981,7 +999,11 @@ with tab_live:
                 return av.VideoFrame.from_ndarray(combined, format="bgr24")
 
             webrtc_streamer(
-                key='live-enhance-stream',
+                # Keyed on quality so switching Fast/Sharp restarts the
+                # stream with the new capture resolution — Streamlit
+                # only re-requests camera constraints for a genuinely
+                # new component instance, not an existing one.
+                key=f'live-enhance-stream-{live_quality}',
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration={"iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]}]},
@@ -989,12 +1011,12 @@ with tab_live:
                     # Without an explicit resolution request, browsers
                     # often default to a low capture size (e.g.
                     # 640x480) and the wide side-by-side display then
-                    # stretches it — read as blur. Ask for 720p; the
-                    # browser falls back to its max supported size if
-                    # the camera can't do this.
+                    # stretches it — read as blur. "Sharp" asks for
+                    # 720p; "Fast" asks for less so there are fewer
+                    # pixels to move/encode/decode per frame.
                     "video": {
-                        "width": {"ideal": 1280},
-                        "height": {"ideal": 720},
+                        "width": {"ideal": _live_res[0]},
+                        "height": {"ideal": _live_res[1]},
                     },
                     "audio": False,
                 },
