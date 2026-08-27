@@ -768,6 +768,7 @@ streamlit run app/streamlit_app.py
                     'enh_p': enh_p, 'cmp_p': cmp_p,
                     'W_v': W_v, 'H_v': H_v,
                     'max_fr': min(tot_v, int(max_sec * fps_v)),
+                    'tot_v': tot_v, 'max_sec': max_sec, 'total_dur': total_dur,
                     'count': 0, 'proc_idx': 0,
                     'last_det_list': [], 'last_pot_boxes': [],
                     'all_track_ids': set(), 'all_counts': {},
@@ -788,6 +789,13 @@ streamlit run app/streamlit_app.py
             if job['status'] == 'running':
                 frac = min(job['count'] / job['max_fr'], 1.0) if job['max_fr'] else 1.0
                 st.progress(frac, f"Frame {job['count']}/{job['max_fr']}")
+                if job['max_fr'] < job['tot_v']:
+                    st.caption(
+                        f"Processing {job['max_fr']} of {job['tot_v']} frames "
+                        f"(~{job['max_sec']}s of {job['total_dur']:.1f}s) — "
+                        "set by the 'Max seconds to process' slider before "
+                        "you clicked Enhance. Cancel and raise it to cover "
+                        "more of the video.")
                 if st.button("🛑 Cancel Enhancement", key='btn_cancel_vid'):
                     job['cancel_requested'] = True
 
@@ -821,6 +829,14 @@ streamlit run app/streamlit_app.py
                         "processing bug.")
                 else:
                     st.success(f"Processed {job['count']} frames!")
+
+                if (not job.get('ended_early')) and job['max_fr'] < job['tot_v']:
+                    st.caption(
+                        f"That's {job['max_fr']} of the video's {job['tot_v']} "
+                        f"total frames (~{job['max_sec']}s of "
+                        f"{job['total_dur']:.1f}s) — capped by the "
+                        "'Max seconds to process' slider. Raise it before "
+                        "your next run to cover more of the video.")
 
                 if job['params']['vid_detect'] and has_yolo:
                     if job['any_high_risk']:
