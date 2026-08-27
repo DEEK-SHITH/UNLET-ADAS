@@ -32,11 +32,21 @@ def _average_slope_line(lines, h, y_top_frac=0.55):
     """
     Collapse a cluster of nearby Hough segments (all left-lane or
     all right-lane) into one representative line, extrapolated from
-    the bottom of the frame up to y_top_frac * height.
+    the bottom of the frame up to y_top_frac * height — but never
+    further up than the topmost segment actually detected.
+
+    Extrapolating a fixed distance regardless of the evidence is
+    what causes the classic "lines crossing high in the sky" defect:
+    a slope estimated from a short, low segment gets a tiny error,
+    and stretching that line far beyond where any edge was actually
+    seen amplifies the error into a wildly wrong vanishing point —
+    worse on a wide, gently-curving multi-lane road (where a straight
+    line is already an approximation) than on a narrow single-lane one.
     """
     if not lines:
         return None
     slopes, intercepts = [], []
+    min_y = h
     for x1, y1, x2, y2 in lines:
         if x2 == x1:
             continue
@@ -44,6 +54,7 @@ def _average_slope_line(lines, h, y_top_frac=0.55):
         intercept = y1 - slope * x1
         slopes.append(slope)
         intercepts.append(intercept)
+        min_y = min(min_y, y1, y2)
     if not slopes:
         return None
     # Median, not mean — a couple of noisy/outlier Hough segments
@@ -51,7 +62,7 @@ def _average_slope_line(lines, h, y_top_frac=0.55):
     # extrapolated line's vanishing point.
     slope, intercept = np.median(slopes), np.median(intercepts)
     y1 = h
-    y2 = int(h * y_top_frac)
+    y2 = max(int(h * y_top_frac), min_y)
     x1 = int((y1 - intercept) / slope)
     x2 = int((y2 - intercept) / slope)
     return (x1, y1, x2, y2)
