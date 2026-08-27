@@ -270,6 +270,117 @@ def redraw_cached_detections(image_np, det_list):
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
 
+def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
+                        pothole_yolo, has_pothole, chunk_size=8):
+    """
+    Process up to chunk_size more frames of an in-progress video job
+    (see the Video tab), mutating job in place.
+
+    Video processing is split into small chunks like this — instead of
+    one big blocking loop — specifically so it can be cancelled: the
+    Video tab calls this once per Streamlit rerun and re-renders the
+    Cancel button in between calls, which a single long-running loop
+    would never yield control back to. It also means a video isn't
+    lost if it stalls partway — whatever was written so far is still
+    a valid, downloadable file.
+
+    Returns True if there's more work to do (call again), False once
+    the job is finished (ran out of frames, hit its frame cap, or was
+    cancelled).
+    """
+    from src.enhance import enhance_frame_batch
+    from src.lane_detection import detect_lanes, draw_lanes
+
+    p = job['params']
+    fb, ob = [], []
+    while len(fb) < chunk_size and job['count'] < job['max_fr']:
+        ret, frm = job['cap'].read()
+        if not ret:
+            # A single failed read isn't necessarily true end-of-stream
+            # — some decoders hiccup on one bad/corrupt frame in an
+            # otherwise longer file. Only give up after a few misses
+            # in a row, rather than truncating the whole rest of the
+            # video on the first stumble.
+            job['read_fail_streak'] = job.get('read_fail_streak', 0) + 1
+            if job['read_fail_streak'] >= 5:
+                job['ended_early'] = True
+                break
+            continue
+        job['read_fail_streak'] = 0
+        rgb = cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)
+        fb.append(rgb)
+        ob.append(frm.copy())
+        job['count'] += 1
+
+    if fb:
+        # Curves are estimated on a small proxy and applied at the
+        # original W_v x H_v resolution, so enhanced frames stay sharp
+        # instead of being blurred by a resize round-trip.
+        enhanced = enhance_frame_batch(
+            model, DEVICE, fb, size=256, adaptive=p['adaptive_mode'])
+
+        for orig_bgr, enh_rgb in zip(ob, enhanced):
+            # In fast mode, the expensive model passes (pothole YOLO,
+            # detection + tracking) only run on every other frame; the
+            # skipped frame reuses the last frame's boxes so the
+            # output still looks fully annotated.
+            run_heavy = (not p['vid_fast']) or (job['proc_idx'] % 2 == 0)
+
+            if p['vid_lanes']:
+                left_line, right_line = detect_lanes(enh_rgb)
+                if left_line is not None or right_line is not None:
+                    enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
+
+            if p['vid_pothole'] and has_pothole:
+                if run_heavy or not job['last_pot_boxes']:
+                    pot_res = pothole_yolo(
+                        enh_rgb, conf=p['det_conf'],
+                        imgsz=p['det_imgsz'], verbose=False)[0]
+                    job['last_pot_boxes'] = [
+                        (*map(int, box.xyxy[0]), float(box.conf[0]))
+                        for box in pot_res.boxes]
+                for x1, y1, x2, y2, pconf in job['last_pot_boxes']:
+                    cv2.rectangle(
+                        enh_rgb, (x1, y1), (x2, y2), (255, 165, 0), 2)
+                    cv2.putText(
+                        enh_rgb, f'Pothole {pconf:.0%}',
+                        (x1, max(y1 - 8, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+
+            if p['vid_detect'] and has_yolo:
+                if run_heavy or not job['last_det_list']:
+                    (enh_rgb, frame_counts, frame_ids, frame_risk,
+                     job['last_det_list']) = track_and_draw(
+                        yolo, enh_rgb, conf=p['det_conf'], imgsz=p['det_imgsz'])
+                    job['all_track_ids'] |= frame_ids
+                    job['any_high_risk'] = job['any_high_risk'] or frame_risk
+                    for k, v in frame_counts.items():
+                        job['all_counts'][k] = job['all_counts'].get(k, 0) + v
+                else:
+                    enh_rgb = redraw_cached_detections(enh_rgb, job['last_det_list'])
+                    job['any_high_risk'] = job['any_high_risk'] or any(
+                        d['risk'] == 'HIGH' for d in job['last_det_list'])
+                    for d in job['last_det_list']:
+                        job['all_counts'][d['name']] = job['all_counts'].get(d['name'], 0) + 1
+
+            job['proc_idx'] += 1
+            eb = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
+            cv2.putText(
+                orig_bgr, 'ORIGINAL', (10, 35),
+                cv2.FONT_HERSHEY_DUPLEX, 1.0, (80, 80, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                eb, 'UNLET ENHANCED', (10, 35),
+                cv2.FONT_HERSHEY_DUPLEX, 1.0, (50, 220, 80), 2, cv2.LINE_AA)
+            job['enh_w'].write(eb)
+            cmp = np.hstack([orig_bgr, eb])
+            cv2.line(cmp, (job['W_v'], 0), (job['W_v'], job['H_v']), (255, 255, 255), 3)
+            job['cmp_w'].write(cmp)
+
+    return (not job['cancel_requested']
+            and not job.get('ended_early')
+            and job['count'] < job['max_fr'])
+
+
 # Header
 st.markdown("""
 <h1 style='text-align:center;color:#22c55e;'>
@@ -567,7 +678,15 @@ streamlit run app/streamlit_app.py
             type=['mp4', 'avi', 'mov'],
             key='vid_upload')
 
-        if vid_upload:
+        if 'vid_job' not in st.session_state:
+            st.session_state.vid_job = None
+
+        if vid_upload and st.session_state.vid_job is None:
+            # Only re-parsed/re-written while no job is running — once
+            # a job starts, everything it needs (the opened capture,
+            # writers, dimensions) already lives in st.session_state,
+            # so there's no need to re-write this file to disk and
+            # re-probe it on every single chunk-processing rerun below.
             tmp = os.path.join(
                 tempfile.gettempdir(), vid_upload.name)
             with open(tmp, 'wb') as f:
@@ -627,9 +746,6 @@ streamlit run app/streamlit_app.py
                      "on every single frame instead.")
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
-                from src.enhance import enhance_frame_batch
-                from src.lane_detection import detect_lanes, draw_lanes
-
                 # Reset ByteTrack state so IDs from a previous run
                 # (if any) don't bleed into this one.
                 if has_yolo and getattr(yolo, 'predictor', None):
@@ -638,133 +754,76 @@ streamlit run app/streamlit_app.py
                     except Exception:
                         pass
 
-                all_track_ids = set()
-                all_counts = {}
-                any_high_risk = False
-
                 enh_p = os.path.join(
                     tempfile.gettempdir(), 'enhanced.mp4')
                 cmp_p = os.path.join(
                     tempfile.gettempdir(), 'comparison.mp4')
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                enh_w = cv2.VideoWriter(
-                    enh_p, fourcc, fps_v, (W_v, H_v))
-                cmp_w = cv2.VideoWriter(
-                    cmp_p, fourcc, fps_v, (W_v * 2, H_v))
 
-                cap = cv2.VideoCapture(tmp)
-                max_fr = min(tot_v, int(max_sec * fps_v))
-                prog = st.progress(0, 'Starting...')
-                fb = []
-                ob = []
-                count = 0
-                proc_idx = 0
-                last_det_list = []
-                last_pot_boxes = []
+                st.session_state.vid_job = {
+                    'status': 'running',
+                    'cap': cv2.VideoCapture(tmp),
+                    'enh_w': cv2.VideoWriter(enh_p, fourcc, fps_v, (W_v, H_v)),
+                    'cmp_w': cv2.VideoWriter(cmp_p, fourcc, fps_v, (W_v * 2, H_v)),
+                    'enh_p': enh_p, 'cmp_p': cmp_p,
+                    'W_v': W_v, 'H_v': H_v,
+                    'max_fr': min(tot_v, int(max_sec * fps_v)),
+                    'count': 0, 'proc_idx': 0,
+                    'last_det_list': [], 'last_pot_boxes': [],
+                    'all_track_ids': set(), 'all_counts': {},
+                    'any_high_risk': False,
+                    'cancel_requested': False, 'ended_early': False,
+                    'params': {
+                        'vid_lanes': vid_lanes, 'vid_pothole': vid_pothole,
+                        'vid_detect': vid_detect, 'vid_fast': vid_fast,
+                        'det_conf': det_conf, 'det_imgsz': det_imgsz,
+                        'adaptive_mode': adaptive_mode,
+                    },
+                }
+                st.rerun()
 
-                while count < max_fr:
-                    ret, frm = cap.read()
-                    if not ret:
-                        break
-                    rgb = cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)
-                    fb.append(rgb)
-                    ob.append(frm.copy())
-                    count += 1
+        if st.session_state.vid_job is not None:
+            job = st.session_state.vid_job
 
-                    if len(fb) >= 4 or count == max_fr:
-                        # Curves are estimated on a small proxy and
-                        # applied at the original W_v x H_v resolution,
-                        # so enhanced frames stay sharp instead of
-                        # being blurred by a resize round-trip.
-                        enhanced = enhance_frame_batch(
-                            model, DEVICE, fb,
-                            size=256, adaptive=adaptive_mode)
+            if job['status'] == 'running':
+                frac = min(job['count'] / job['max_fr'], 1.0) if job['max_fr'] else 1.0
+                st.progress(frac, f"Frame {job['count']}/{job['max_fr']}")
+                if st.button("🛑 Cancel Enhancement", key='btn_cancel_vid'):
+                    job['cancel_requested'] = True
 
-                        for orig_bgr, enh_rgb in zip(ob, enhanced):
-                            # In fast mode, the expensive model passes
-                            # (pothole YOLO, detection + tracking) only
-                            # run on every other frame; the skipped
-                            # frame reuses the last frame's boxes so
-                            # the output still looks fully annotated.
-                            run_heavy = (not vid_fast) or (proc_idx % 2 == 0)
+                more = process_video_chunk(
+                    job, model, DEVICE, yolo, has_yolo,
+                    pothole_yolo, has_pothole)
 
-                            if vid_lanes:
-                                left_line, right_line = detect_lanes(enh_rgb)
-                                if left_line is not None or right_line is not None:
-                                    enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
+                if more:
+                    st.rerun()
+                else:
+                    job['cap'].release()
+                    job['enh_w'].release()
+                    job['cmp_w'].release()
+                    job['status'] = 'done'
+                    st.rerun()
+            else:
+                if job['cancel_requested']:
+                    st.warning(
+                        f"Cancelled — kept the {job['count']} frames "
+                        "processed before you stopped it.")
+                elif job.get('ended_early') and job['count'] < job['max_fr']:
+                    st.info(
+                        f"Video ended after {job['count']} frames — "
+                        f"fewer than the {job['max_fr']} its own "
+                        "metadata claimed. This happens with "
+                        "variable-frame-rate recordings (a camera "
+                        "changing exposure in low light can vary "
+                        "its real frame rate even though the file "
+                        "header states a fixed one) — what you got "
+                        "is the actual decodable content, not a "
+                        "processing bug.")
+                else:
+                    st.success(f"Processed {job['count']} frames!")
 
-                            if vid_pothole and has_pothole:
-                                if run_heavy or not last_pot_boxes:
-                                    pot_res = pothole_yolo(
-                                        enh_rgb, conf=det_conf,
-                                        imgsz=det_imgsz, verbose=False)[0]
-                                    last_pot_boxes = [
-                                        (*map(int, box.xyxy[0]), float(box.conf[0]))
-                                        for box in pot_res.boxes]
-                                for x1, y1, x2, y2, pconf in last_pot_boxes:
-                                    cv2.rectangle(
-                                        enh_rgb, (x1, y1), (x2, y2),
-                                        (255, 165, 0), 2)
-                                    cv2.putText(
-                                        enh_rgb, f'Pothole {pconf:.0%}',
-                                        (x1, max(y1 - 8, 10)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                                        (255, 165, 0), 2)
-
-                            if vid_detect and has_yolo:
-                                if run_heavy or not last_det_list:
-                                    enh_rgb, frame_counts, frame_ids, frame_risk, last_det_list = \
-                                        track_and_draw(
-                                            yolo, enh_rgb,
-                                            conf=det_conf, imgsz=det_imgsz)
-                                    all_track_ids |= frame_ids
-                                    any_high_risk = any_high_risk or frame_risk
-                                    for k, v in frame_counts.items():
-                                        all_counts[k] = all_counts.get(k, 0) + v
-                                else:
-                                    enh_rgb = redraw_cached_detections(enh_rgb, last_det_list)
-                                    any_high_risk = any_high_risk or any(
-                                        d['risk'] == 'HIGH' for d in last_det_list)
-                                    for d in last_det_list:
-                                        all_counts[d['name']] = all_counts.get(d['name'], 0) + 1
-
-                            proc_idx += 1
-                            eb = cv2.cvtColor(
-                                enh_rgb, cv2.COLOR_RGB2BGR)
-                            cv2.putText(
-                                orig_bgr, 'ORIGINAL',
-                                (10, 35),
-                                cv2.FONT_HERSHEY_DUPLEX,
-                                1.0, (80, 80, 255), 2,
-                                cv2.LINE_AA)
-                            cv2.putText(
-                                eb, 'UNLET ENHANCED',
-                                (10, 35),
-                                cv2.FONT_HERSHEY_DUPLEX,
-                                1.0, (50, 220, 80), 2,
-                                cv2.LINE_AA)
-                            enh_w.write(eb)
-                            cmp = np.hstack([orig_bgr, eb])
-                            cv2.line(
-                                cmp, (W_v, 0), (W_v, H_v),
-                                (255, 255, 255), 3)
-                            cmp_w.write(cmp)
-
-                        fb.clear()
-                        ob.clear()
-                        prog.progress(
-                            min(count / max_fr, 1.0),
-                            f'Frame {count}/{max_fr}')
-
-                cap.release()
-                enh_w.release()
-                cmp_w.release()
-                prog.progress(1.0, 'Done!')
-
-                st.success(f"Processed {count} frames!")
-
-                if vid_detect and has_yolo:
-                    if any_high_risk:
+                if job['params']['vid_detect'] and has_yolo:
+                    if job['any_high_risk']:
                         st.error(
                             "⚠️ HIGH proximity risk detected in at least "
                             "one frame — an object filled a large part "
@@ -776,19 +835,19 @@ streamlit run app/streamlit_app.py
                     with s1:
                         st.markdown(
                             f"<div class='metric-box'>"
-                            f"<div class='metric-val'>{len(all_track_ids)}</div>"
+                            f"<div class='metric-val'>{len(job['all_track_ids'])}</div>"
                             f"<div class='metric-lbl'>Unique Objects Tracked "
                             f"(not just per-frame counts)</div>"
                             f"</div>", unsafe_allow_html=True)
                     with s2:
                         st.markdown(
                             f"<div class='metric-box'>"
-                            f"<div class='metric-val'>{sum(all_counts.values())}</div>"
+                            f"<div class='metric-val'>{sum(job['all_counts'].values())}</div>"
                             f"<div class='metric-lbl'>Total Detections "
                             f"Across All Frames</div>"
                             f"</div>", unsafe_allow_html=True)
 
-                    if all_counts and not all_track_ids:
+                    if job['all_counts'] and not job['all_track_ids']:
                         st.caption(
                             "No object was tracked confidently enough "
                             "across consecutive frames to earn a persistent "
@@ -797,11 +856,11 @@ streamlit run app/streamlit_app.py
                             "above were real but too brief/sparse in this "
                             "clip to accumulate a stable ID.")
 
-                    if all_counts:
+                    if job['all_counts']:
                         import matplotlib.pyplot as plt
                         fig, ax = plt.subplots(figsize=(8, 3))
-                        names = list(all_counts.keys())
-                        vals = [all_counts[n] for n in names]
+                        names = list(job['all_counts'].keys())
+                        vals = [job['all_counts'][n] for n in names]
                         ax.bar(names, vals, color='#22c55e')
                         ax.set_facecolor('#0f172a')
                         fig.patch.set_facecolor('#0f172a')
@@ -815,8 +874,8 @@ streamlit run app/streamlit_app.py
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.subheader("Enhanced Video")
-                    st.video(enh_p)
-                    with open(enh_p, 'rb') as f:
+                    st.video(job['enh_p'])
+                    with open(job['enh_p'], 'rb') as f:
                         st.download_button(
                             "⬇️ Download Enhanced",
                             f.read(),
@@ -825,14 +884,18 @@ streamlit run app/streamlit_app.py
                             use_container_width=True)
                 with col_b:
                     st.subheader("Side-by-Side")
-                    st.video(cmp_p)
-                    with open(cmp_p, 'rb') as f:
+                    st.video(job['cmp_p'])
+                    with open(job['cmp_p'], 'rb') as f:
                         st.download_button(
                             "⬇️ Download Comparison",
                             f.read(),
                             'comparison.mp4',
                             'video/mp4',
                             use_container_width=True)
+
+                if st.button("🔁 Process Another Video", key='btn_vid_reset'):
+                    st.session_state.vid_job = None
+                    st.rerun()
 
 # LIVE CAMERA TAB
 with tab_live:
