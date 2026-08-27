@@ -228,6 +228,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
     counts = {}
     track_ids = set()
     high_risk = False
+    det_list = []
     ids = results.boxes.id
     for i, box in enumerate(results.boxes):
         cls_id = int(box.cls[0])
@@ -240,14 +241,33 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
         high_risk = high_risk or risk == 'HIGH'
         track_id = int(ids[i]) if ids is not None else None
         id_bit = f'#{track_id} ' if track_id is not None else ''
-        _draw_detection(
-            img_bgr, x1, y1, x2, y2,
-            f'{name} {id_bit}· {risk}', risk)
+        label = f'{name} {id_bit}· {risk}'
+        _draw_detection(img_bgr, x1, y1, x2, y2, label, risk)
         counts[name] = counts.get(name, 0) + 1
         if track_id is not None:
             track_ids.add(track_id)
+        det_list.append({
+            'name': name, 'box': [x1, y1, x2, y2],
+            'risk': risk, 'label': label, 'track_id': track_id,
+        })
     ann = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return ann, counts, track_ids, high_risk
+    return ann, counts, track_ids, high_risk, det_list
+
+
+def redraw_cached_detections(image_np, det_list):
+    """
+    Draw a previously-computed set of detection boxes onto a new frame
+    without running the model again — used on the frames "fast mode"
+    skips, so the video keeps a box on every frame (no flicker) while
+    only paying for a fresh YOLO pass every other frame.
+    """
+    if not det_list:
+        return image_np
+    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    for d in det_list:
+        x1, y1, x2, y2 = d['box']
+        _draw_detection(img_bgr, x1, y1, x2, y2, d['label'], d['risk'])
+    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
 
 # Header
@@ -547,21 +567,6 @@ streamlit run app/streamlit_app.py
             type=['mp4', 'avi', 'mov'],
             key='vid_upload')
 
-        max_sec = st.slider(
-            "Max seconds to process", 5, 60, 10)
-        vid_detect = st.checkbox(
-            "Run YOLOv8 detection on enhanced frames", value=True,
-            key='vid_detect')
-        vid_lanes = st.checkbox(
-            "Run lane detection on enhanced frames", value=True,
-            key='vid_lanes')
-        vid_pothole = st.checkbox(
-            "Run pothole detection on enhanced frames",
-            value=True, disabled=not has_pothole,
-            key='vid_pothole',
-            help=None if has_pothole else
-            "Needs a trained pothole model — see src/train_pothole.py")
-
         if vid_upload:
             tmp = os.path.join(
                 tempfile.gettempdir(), vid_upload.name)
@@ -574,11 +579,52 @@ streamlit run app/streamlit_app.py
             H_v = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             tot_v = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
+            total_dur = tot_v / fps_v
 
             st.info(
                 f"Video: {W_v}x{H_v} @ {fps_v:.0f}fps | "
                 f"{tot_v} frames | "
-                f"{tot_v/fps_v:.1f}s total")
+                f"{total_dur:.1f}s total")
+
+            # Keyed to this specific file so the default adapts to each
+            # newly uploaded video (defaults to the whole thing, up to
+            # the 60s cap) instead of always resetting to a fixed 10s —
+            # that fixed default was silently truncating every longer
+            # upload to its first 10 seconds.
+            max_sec = st.slider(
+                "Max seconds to process", 5, 60,
+                value=min(max(int(total_dur) + 1, 5), 60),
+                key=f'max_sec_{vid_upload.name}_{vid_upload.size}',
+                help="Processing runs frame-by-frame on CPU/GPU, so "
+                     "longer clips take proportionally longer — this "
+                     "caps it. Lower it for a quick preview.")
+            if max_sec < total_dur:
+                st.warning(
+                    f"Only the first {max_sec}s of this "
+                    f"{total_dur:.1f}s video will be processed — raise "
+                    "the slider above to cover more of it.")
+
+            vid_detect = st.checkbox(
+                "Run YOLOv8 detection on enhanced frames", value=True,
+                key='vid_detect')
+            vid_lanes = st.checkbox(
+                "Run lane detection on enhanced frames", value=True,
+                key='vid_lanes')
+            vid_pothole = st.checkbox(
+                "Run pothole detection on enhanced frames",
+                value=True, disabled=not has_pothole,
+                key='vid_pothole',
+                help=None if has_pothole else
+                "Needs a trained pothole model — see src/train_pothole.py")
+            vid_fast = st.checkbox(
+                "⚡ Faster processing (detect objects every 2nd frame)",
+                value=True, key='vid_fast',
+                help="Object detection is the slowest step. In fast "
+                     "mode it runs on every other frame and the boxes "
+                     "are carried over onto the frame in between, so "
+                     "the video still looks fully annotated but takes "
+                     "roughly half the time. Turn off to run detection "
+                     "on every single frame instead.")
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
                 from src.enhance import enhance_frame_batch
@@ -612,6 +658,9 @@ streamlit run app/streamlit_app.py
                 fb = []
                 ob = []
                 count = 0
+                proc_idx = 0
+                last_det_list = []
+                last_pot_boxes = []
 
                 while count < max_fr:
                     ret, frm = cap.read()
@@ -632,17 +681,27 @@ streamlit run app/streamlit_app.py
                             size=256, adaptive=adaptive_mode)
 
                         for orig_bgr, enh_rgb in zip(ob, enhanced):
+                            # In fast mode, the expensive model passes
+                            # (pothole YOLO, detection + tracking) only
+                            # run on every other frame; the skipped
+                            # frame reuses the last frame's boxes so
+                            # the output still looks fully annotated.
+                            run_heavy = (not vid_fast) or (proc_idx % 2 == 0)
+
                             if vid_lanes:
                                 left_line, right_line = detect_lanes(enh_rgb)
                                 if left_line is not None or right_line is not None:
                                     enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
+
                             if vid_pothole and has_pothole:
-                                pot_res = pothole_yolo(
-                                    enh_rgb, conf=det_conf,
-                                    imgsz=det_imgsz, verbose=False)[0]
-                                for box in pot_res.boxes:
-                                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                    pconf = float(box.conf[0])
+                                if run_heavy or not last_pot_boxes:
+                                    pot_res = pothole_yolo(
+                                        enh_rgb, conf=det_conf,
+                                        imgsz=det_imgsz, verbose=False)[0]
+                                    last_pot_boxes = [
+                                        (*map(int, box.xyxy[0]), float(box.conf[0]))
+                                        for box in pot_res.boxes]
+                                for x1, y1, x2, y2, pconf in last_pot_boxes:
                                     cv2.rectangle(
                                         enh_rgb, (x1, y1), (x2, y2),
                                         (255, 165, 0), 2)
@@ -651,15 +710,25 @@ streamlit run app/streamlit_app.py
                                         (x1, max(y1 - 8, 10)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                         (255, 165, 0), 2)
+
                             if vid_detect and has_yolo:
-                                enh_rgb, frame_counts, frame_ids, frame_risk = \
-                                    track_and_draw(
-                                        yolo, enh_rgb,
-                                        conf=det_conf, imgsz=det_imgsz)
-                                all_track_ids |= frame_ids
-                                any_high_risk = any_high_risk or frame_risk
-                                for k, v in frame_counts.items():
-                                    all_counts[k] = all_counts.get(k, 0) + v
+                                if run_heavy or not last_det_list:
+                                    enh_rgb, frame_counts, frame_ids, frame_risk, last_det_list = \
+                                        track_and_draw(
+                                            yolo, enh_rgb,
+                                            conf=det_conf, imgsz=det_imgsz)
+                                    all_track_ids |= frame_ids
+                                    any_high_risk = any_high_risk or frame_risk
+                                    for k, v in frame_counts.items():
+                                        all_counts[k] = all_counts.get(k, 0) + v
+                                else:
+                                    enh_rgb = redraw_cached_detections(enh_rgb, last_det_list)
+                                    any_high_risk = any_high_risk or any(
+                                        d['risk'] == 'HIGH' for d in last_det_list)
+                                    for d in last_det_list:
+                                        all_counts[d['name']] = all_counts.get(d['name'], 0) + 1
+
+                            proc_idx += 1
                             eb = cv2.cvtColor(
                                 enh_rgb, cv2.COLOR_RGB2BGR)
                             cv2.putText(
