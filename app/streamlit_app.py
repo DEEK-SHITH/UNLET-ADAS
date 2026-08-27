@@ -20,6 +20,13 @@ try:
 except ImportError:
     HAS_CV2 = False
 
+try:
+    import av
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode
+    HAS_WEBRTC = True
+except ImportError:
+    HAS_WEBRTC = False
+
 st.set_page_config(
     page_title="UNLET-ADAS",
     page_icon="🚗",
@@ -915,26 +922,98 @@ streamlit run app/streamlit_app.py
 
 # LIVE CAMERA TAB
 with tab_live:
-    st.header("Live Camera Snapshot")
-    st.markdown(
-        "Uses your browser's camera (works on a phone/laptop even "
-        "when the app is running on Streamlit Cloud, since capture "
-        "happens client-side) — take a photo and it runs through the "
-        "same enhancement + detection pipeline as the Image tab. "
-        "This is a snap-and-analyze flow, not a continuous live "
-        "video feed — Streamlit's browser camera API is snapshot-based.")
+    st.header("Live Camera")
 
-    camera_on = st.checkbox(
-        "📷 Turn Camera On", value=False, key='camera_on',
-        help="Off by default — the browser only asks for camera "
-             "permission / shows a live preview once you switch "
-             "this on, not just from visiting this tab.")
+    live_mode = st.radio(
+        "Mode", ["📸 Snapshot", "🎥 Live Stream (real-time)"],
+        horizontal=True, key='live_mode',
+        help="Snapshot always works and is the reliable option for a "
+             "demo. Live Stream processes your camera continuously in "
+             "real time, but its frame rate depends entirely on your "
+             "CPU/GPU — it can be choppy on a laptop with no GPU.")
 
-    if not camera_on:
-        st.info("Camera is off. Turn it on above to take a photo.")
+    if live_mode == "🎥 Live Stream (real-time)":
+        st.markdown(
+            "Continuously enhances your camera feed and shows the "
+            "original and enhanced video **side by side, live** — no "
+            "button press needed once the stream starts. Runs entirely "
+            "in your browser + this server via WebRTC, so it also "
+            "works when the app is deployed on Streamlit Cloud.")
+
+        if not HAS_WEBRTC:
+            st.warning(
+                "Live Stream mode needs the `streamlit-webrtc` package, "
+                "which isn't installed. Run `pip install -r "
+                "requirements.txt` (it's included there) and restart "
+                "the app, or use Snapshot mode above instead.")
+        else:
+            live_stream_detect = st.checkbox(
+                "Run YOLOv8 detection on the live stream", value=False,
+                key='live_stream_detect',
+                help="Off by default — object detection roughly halves "
+                     "the frame rate again on top of enhancement. Turn "
+                     "it on if your machine can keep up.")
+
+            def _live_video_frame_callback(frame):
+                img_bgr = frame.to_ndarray(format="bgr24")
+                rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                enh_rgb = np.array(enhance_pil(
+                    model, DEVICE, Image.fromarray(rgb),
+                    adaptive=adaptive_mode))
+
+                if live_stream_detect and has_yolo:
+                    # Capped well below the sidebar's det_imgsz — live
+                    # frame-by-frame inference needs to stay fast or
+                    # the stream stalls, unlike a one-shot image/video.
+                    enh_rgb, _, _, _ = detect_and_draw(
+                        yolo, enh_rgb, conf=det_conf,
+                        imgsz=min(det_imgsz, 320))
+
+                enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
+                orig_labeled = img_bgr.copy()
+                cv2.putText(
+                    orig_labeled, 'ORIGINAL', (10, 30),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.8, (80, 80, 255), 2, cv2.LINE_AA)
+                cv2.putText(
+                    enh_bgr, 'ENHANCED', (10, 30),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.8, (50, 220, 80), 2, cv2.LINE_AA)
+                combined = np.hstack([orig_labeled, enh_bgr])
+                return av.VideoFrame.from_ndarray(combined, format="bgr24")
+
+            webrtc_streamer(
+                key='live-enhance-stream',
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration={"iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]}]},
+                media_stream_constraints={"video": True, "audio": False},
+                video_frame_callback=_live_video_frame_callback,
+                async_processing=True,
+            )
+            st.caption(
+                "Click START above, then allow camera access. If it "
+                "stays black, your network may be blocking the WebRTC "
+                "connection — Snapshot mode is the fallback.")
         live_shot = None
     else:
-        live_shot = st.camera_input("Take a photo")
+        st.markdown(
+            "Uses your browser's camera (works on a phone/laptop even "
+            "when the app is running on Streamlit Cloud, since capture "
+            "happens client-side) — take a photo and it runs through the "
+            "same enhancement + detection pipeline as the Image tab. "
+            "This is a snap-and-analyze flow, not a continuous live "
+            "video feed — switch to Live Stream mode above for that.")
+
+        camera_on = st.checkbox(
+            "📷 Turn Camera On", value=False, key='camera_on',
+            help="Off by default — the browser only asks for camera "
+                 "permission / shows a live preview once you switch "
+                 "this on, not just from visiting this tab.")
+
+        if not camera_on:
+            st.info("Camera is off. Turn it on above to take a photo.")
+            live_shot = None
+        else:
+            live_shot = st.camera_input("Take a photo")
 
     if live_shot is not None:
         pil_live = Image.open(live_shot).convert('RGB')

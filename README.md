@@ -80,6 +80,13 @@ now:
   below). The app detects the trained weights automatically once
   present and enables the toggle; without them, it stays off and says
   why.
+- **Real-time live camera stream.** The Live Camera tab has a "Live
+  Stream" mode (via WebRTC, `streamlit-webrtc`) that continuously
+  enhances your camera feed and shows original + enhanced **side by
+  side, live** — no button press per frame. Frame rate depends
+  entirely on your CPU/GPU; the original snapshot-based mode (one
+  photo at a time) is kept as the reliable fallback for slower
+  machines or restrictive networks.
 
 ---
 
