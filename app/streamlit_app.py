@@ -97,6 +97,27 @@ def load_detector(weights='yolov8s.pt'):
         return None, False
 
 
+@st.cache_resource
+def load_pothole_detector():
+    """
+    Loads a dedicated single-class pothole detector, if one has been
+    trained (see src/train_pothole.py — COCO/YOLOv8 has no pothole
+    class, so this is a separate fine-tuned model, not a toggle on
+    the main ADAS detector). Returns (None, False) if the weights
+    file isn't present, so the app degrades gracefully instead of
+    crashing on a fresh checkout.
+    """
+    weights = os.path.join(
+        os.path.dirname(__file__), 'pothole_best.pt')
+    if not os.path.exists(weights):
+        return None, False
+    try:
+        from ultralytics import YOLO
+        return YOLO(weights), True
+    except Exception:
+        return None, False
+
+
 @torch.no_grad()
 def enhance_pil(model, device, pil_image, adaptive=True):
     """
@@ -175,6 +196,7 @@ det_model_choice = st.sidebar.selectbox(
 with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
     yolo, has_yolo = load_detector(det_model_choice)
+    pothole_yolo, has_pothole = load_pothole_detector()
 
 # Sidebar
 st.sidebar.markdown("## System Info")
@@ -187,6 +209,11 @@ if has_yolo:
     st.sidebar.success(f"{det_model_choice} Detection Ready")
 else:
     st.sidebar.warning("YOLOv8 not available")
+if has_pothole:
+    st.sidebar.success("Pothole Detector Ready")
+else:
+    st.sidebar.info(
+        "Pothole Detector not trained — see src/train_pothole.py")
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 ### About
@@ -238,7 +265,7 @@ with tab1:
         "Upload a dark/night image. "
         "UNLET enhances it then YOLOv8 detects objects.")
 
-    col_chk1, col_chk2 = st.columns(2)
+    col_chk1, col_chk2, col_chk3 = st.columns(3)
     with col_chk1:
         use_detection = st.checkbox(
             "Enable YOLOv8 Detection after enhancement",
@@ -249,6 +276,17 @@ with tab1:
             help="Classical edge-based lane-line detection (Canny + "
                  "Hough transform) run on the enhanced frame — best on "
                  "straight/gently-curved roads with visible markings.")
+    with col_chk3:
+        use_pothole = st.checkbox(
+            "Enable Pothole Detection", value=True,
+            disabled=not has_pothole,
+            help="Needs a trained pothole model — run "
+                 "src/train_pothole.py and drop the resulting "
+                 "pothole_best.pt into app/ to enable this."
+                 if not has_pothole else
+                 "Dedicated single-class YOLOv8 model fine-tuned on "
+                 "a public pothole dataset (COCO/YOLOv8 has no "
+                 "pothole class, so this runs as a separate pass).")
 
     uploaded = st.file_uploader(
         "Choose an image",
@@ -293,18 +331,38 @@ with tab1:
                 if lane_found:
                     det_img = draw_lanes(det_img, left_line, right_line)
 
+            pothole_count = 0
+            if use_pothole and has_pothole and HAS_CV2:
+                with st.spinner("Running pothole detector..."):
+                    pot_res = pothole_yolo(
+                        det_img, conf=det_conf, imgsz=det_imgsz,
+                        verbose=False)[0]
+                    pot_bgr = cv2.cvtColor(det_img, cv2.COLOR_RGB2BGR)
+                    for box in pot_res.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        pconf = float(box.conf[0])
+                        cv2.rectangle(
+                            pot_bgr, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                        cv2.putText(
+                            pot_bgr, f'Pothole {pconf:.0%}', (x1, max(y1 - 8, 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+                        pothole_count += 1
+                    det_img = cv2.cvtColor(pot_bgr, cv2.COLOR_BGR2RGB)
+
             with col2:
                 st.subheader("✨ UNLET Enhanced")
                 st.image(enh, use_container_width=True)
                 st.caption(f"Avg brightness: {enh_b:.3f}")
 
             with col3:
-                if (use_detection and det_list) or lane_found:
+                if (use_detection and det_list) or lane_found or pothole_count:
                     label_bits = []
                     if use_detection and det_list:
                         label_bits.append(f"{len(det_list)} objects")
                     if lane_found:
                         label_bits.append("lanes")
+                    if pothole_count:
+                        label_bits.append(f"{pothole_count} potholes")
                     st.subheader(f"🎯 Detection ({', '.join(label_bits)})")
                     st.image(det_img, use_container_width=True)
                 else:
@@ -409,6 +467,12 @@ streamlit run app/streamlit_app.py
         vid_lanes = st.checkbox(
             "Run lane detection on enhanced frames", value=True,
             key='vid_lanes')
+        vid_pothole = st.checkbox(
+            "Run pothole detection on enhanced frames",
+            value=True, disabled=not has_pothole,
+            key='vid_pothole',
+            help=None if has_pothole else
+            "Needs a trained pothole model — see src/train_pothole.py")
 
         if vid_upload:
             tmp = os.path.join(
@@ -472,6 +536,21 @@ streamlit run app/streamlit_app.py
                                 left_line, right_line = detect_lanes(enh_rgb)
                                 if left_line is not None or right_line is not None:
                                     enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
+                            if vid_pothole and has_pothole:
+                                pot_res = pothole_yolo(
+                                    enh_rgb, conf=det_conf,
+                                    imgsz=det_imgsz, verbose=False)[0]
+                                for box in pot_res.boxes:
+                                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                    pconf = float(box.conf[0])
+                                    cv2.rectangle(
+                                        enh_rgb, (x1, y1), (x2, y2),
+                                        (255, 165, 0), 2)
+                                    cv2.putText(
+                                        enh_rgb, f'Pothole {pconf:.0%}',
+                                        (x1, max(y1 - 8, 10)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                        (255, 165, 0), 2)
                             if vid_detect and has_yolo:
                                 enh_rgb, _, _ = detect_and_draw(
                                     yolo, enh_rgb,
