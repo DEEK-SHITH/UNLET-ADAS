@@ -147,6 +147,11 @@ Get a free API key at [app.roboflow.com](https://app.roboflow.com)
 [Pothole Object Detection Dataset](https://public.roboflow.com/object-detection/pothole)
 (665 images, Roboflow's curated Public Datasets collection).
 
+Prefer a free GPU over local CPU training? Open
+[`notebooks/UNLET_ADAS_Pothole_Colab.ipynb`](notebooks/UNLET_ADAS_Pothole_Colab.ipynb)
+in Google Colab — same download + training steps, just paste your API
+key into the config cell and run top to bottom (~15–25 min on a T4).
+
 ### Enhance a Video
 ```python
 from src.model import build_model
@@ -182,7 +187,8 @@ UNLET-ADAS/
 │ ├── streamlit_app.py # Web application
 │ └── zerodce_cbam_best.pt # Trained weights
 ├── notebooks/
-│ └── UNLET_ADAS_Colab.ipynb # Google Colab notebook
+│ ├── UNLET_ADAS_Colab.ipynb # Main model training (Colab)
+│ └── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
 ├── results/
 │ ├── metric_comparison.png # PSNR/SSIM charts
 │ ├── training_curves.png # Loss curves

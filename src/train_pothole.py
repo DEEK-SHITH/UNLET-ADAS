@@ -18,7 +18,12 @@ Usage:
     pip install roboflow ultralytics
     python src/train_pothole.py --roboflow_key YOUR_FREE_API_KEY
 
-Or in Colab:
+Or in Colab (free GPU, no local install needed):
+    Open notebooks/UNLET_ADAS_Pothole_Colab.ipynb in Google Colab,
+    paste your API key into the config cell, and run top to bottom.
+
+    Equivalent manual command if you'd rather run this script directly
+    in a Colab cell instead of using the notebook:
     !python src/train_pothole.py --roboflow_key YOUR_FREE_API_KEY \
                                   --save_dir /content/drive/MyDrive/UNLET_Project/checkpoints \
                                   --epochs 100

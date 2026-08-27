@@ -202,7 +202,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
         high_risk = high_risk or risk == 'HIGH'
         _draw_detection(
             img_bgr, x1, y1, x2, y2,
-            f'{name} {conf_s:.0%} · {risk}', risk)
+            f'{name} · {risk}', risk)
         counts[name] = counts.get(name, 0) + 1
         det_list.append({
             'name': name, 'conf': conf_s,
@@ -242,7 +242,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
         id_bit = f'#{track_id} ' if track_id is not None else ''
         _draw_detection(
             img_bgr, x1, y1, x2, y2,
-            f'{name} {id_bit}{conf_s:.0%} · {risk}', risk)
+            f'{name} {id_bit}· {risk}', risk)
         counts[name] = counts.get(name, 0) + 1
         if track_id is not None:
             track_ids.add(track_id)
