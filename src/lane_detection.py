@@ -99,12 +99,31 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
                 continue
             (left if slope < 0 else right).append((x1, y1, x2, y2))
 
-    return (_average_slope_line(left, h), _average_slope_line(right, h))
+    left_line, right_line = _average_slope_line(left, h), _average_slope_line(right, h)
+
+    # A left/right pair should never cross: the left boundary must stay
+    # left of the right boundary at both the near (bottom) and far (top)
+    # end. On a sharp curve or hilly incline, a noisy Hough segment can
+    # give one side a bad slope that swings it across to the other side
+    # of the frame — drawing that looks like an "X" crossing over the
+    # road instead of two lane boundaries. Better to report no lane for
+    # that frame than draw geometry that's visibly wrong.
+    if left_line is not None and right_line is not None:
+        if left_line[0] >= right_line[0] or left_line[2] >= right_line[2]:
+            left_line, right_line = None, None
+
+    return (left_line, right_line)
 
 
 def draw_lanes(frame_rgb, left_line, right_line,
-               color=(0, 255, 60), thickness=6, fill_alpha=0.25):
-    """Overlay detected lane lines (and the lane area, if both found) on frame_rgb."""
+               color=(0, 255, 60), thickness=5, fill_alpha=0.0):
+    """
+    Overlay detected lane boundary lines on frame_rgb. No shaded fill
+    by default (fill_alpha=0) — the point is to mark where the lane
+    edges are while leaving the actual road surface fully visible;
+    pass a small fill_alpha (e.g. 0.12) if a light lane-area tint is
+    wanted instead.
+    """
     overlay = frame_rgb.copy()
 
     if left_line is not None:
@@ -112,7 +131,7 @@ def draw_lanes(frame_rgb, left_line, right_line,
     if right_line is not None:
         cv2.line(overlay, right_line[:2], right_line[2:], color, thickness)
 
-    if left_line is not None and right_line is not None:
+    if left_line is not None and right_line is not None and fill_alpha > 0:
         lane_poly = np.array([[
             left_line[0:2], left_line[2:4],
             right_line[2:4], right_line[0:2],
