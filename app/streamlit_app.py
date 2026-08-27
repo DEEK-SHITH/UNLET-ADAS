@@ -36,29 +36,157 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-[data-testid="stAppViewContainer"] {background:#0f172a;}
-[data-testid="stSidebar"] {background:#1e293b;}
-h1,h2,h3,p,label {color:#e2e8f0;}
+:root {
+    --bg:        #0a0f1e;
+    --bg-panel:  #111a2e;
+    --bg-card:   #16213b;
+    --bg-card-2: #1a2744;
+    --border:    #263457;
+    --border-lt: #334869;
+    --accent:    #22c55e;
+    --accent-2:  #38bdf8;
+    --text:      #e8edf7;
+    --text-dim:  #94a3b8;
+    --text-faint:#64748b;
+    --danger:    #f87171;
+    --warning:   #fbbf24;
+}
+
+/* ---------- base ---------- */
+[data-testid="stAppViewContainer"] { background: var(--bg); }
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] {
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] > div:first-child { padding-top: 1.25rem; }
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+}
+h1, h2, h3, h4, p, label, span, .stMarkdown { color: var(--text); }
+[data-testid="stSidebar"] * { color: var(--text) !important; }
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {
+    color: var(--text-dim) !important;
+}
+::selection { background: var(--accent); color: #0a0f1e; }
+
+/* custom scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-lt); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-2); }
+
+/* ---------- hero header ---------- */
+.hero-wrap { text-align: center; padding: 0.5rem 0 1.25rem; }
+.hero-title {
+    font-size: 2.6rem; font-weight: 800; letter-spacing: -0.02em;
+    margin: 0; line-height: 1.15;
+    background: linear-gradient(120deg, #22c55e 10%, #38bdf8 90%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.hero-sub {
+    color: var(--text-dim); font-size: 1.05rem; margin: 0.4rem 0 0;
+}
+.hero-meta { color: var(--text-faint); font-size: 0.88rem; margin: 0.25rem 0 0.9rem; }
+.badge-row { display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; }
+.badge-pill {
+    display: inline-block; padding: 0.28rem 0.85rem; border-radius: 999px;
+    background: var(--bg-card); border: 1px solid var(--border-lt);
+    color: var(--text-dim); font-size: 0.78rem; font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+/* ---------- tabs ---------- */
+[data-testid="stTabs"] [role="tablist"] {
+    gap: 4px; border-bottom: 1px solid var(--border);
+}
+[data-testid="stTab"] {
+    height: 3rem; padding: 0 1.25rem; border-radius: 10px 10px 0 0;
+    background: transparent; color: var(--text-dim) !important;
+    font-weight: 600; font-size: 0.95rem; transition: all 0.15s ease;
+    display: flex; align-items: center;
+}
+[data-testid="stTab"] p { color: inherit !important; font-weight: inherit; }
+[data-testid="stTab"]:hover {
+    background: var(--bg-card); color: var(--text) !important;
+}
+[data-testid="stTab"][aria-selected="true"] {
+    background: var(--bg-card); color: var(--accent) !important;
+    box-shadow: inset 0 -3px 0 var(--accent);
+}
+[data-testid="stTab"] .react-aria-SelectionIndicator { display: none; }
+[data-testid="stTabPanel"] { padding-top: 1.5rem; }
+
+/* ---------- cards / metrics ---------- */
+.section-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1.25rem 1.4rem; margin: 0.6rem 0 1rem;
+}
 .metric-box {
-    background:#1e293b;
-    border-radius:10px;
-    padding:18px;
-    text-align:center;
-    border:1px solid #334155;
-    margin:4px;
+    background: var(--bg-card);
+    border-radius: 12px; padding: 18px; text-align: center;
+    border: 1px solid var(--border); margin: 4px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
 }
-.metric-val {font-size:1.8rem; font-weight:700; color:#22c55e;}
-.metric-lbl {font-size:0.82rem; color:#94a3b8; margin-top:4px;}
-.stButton>button {
-    background:linear-gradient(135deg,#22c55e,#0ea5e9);
-    color:white;
-    border:none;
-    border-radius:8px;
-    padding:12px 28px;
-    font-weight:600;
-    font-size:1rem;
-    width:100%;
+.metric-box:hover { transform: translateY(-2px); border-color: var(--accent-2); }
+.metric-val { font-size: 1.9rem; font-weight: 800; color: var(--accent); }
+.metric-lbl { font-size: 0.82rem; color: var(--text-dim); margin-top: 4px; }
+
+/* ---------- buttons ---------- */
+.stButton>button, .stDownloadButton>button {
+    background: linear-gradient(135deg, #22c55e, #0ea5e9);
+    color: white; border: none; border-radius: 10px;
+    padding: 0.7rem 1.7rem; font-weight: 700; font-size: 1rem;
+    width: 100%; letter-spacing: 0.01em;
+    box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
+.stButton>button:hover, .stDownloadButton>button:hover {
+    transform: translateY(-1px); filter: brightness(1.08);
+    box-shadow: 0 4px 16px rgba(56, 189, 248, 0.25);
+}
+.stButton>button:active, .stDownloadButton>button:active { transform: translateY(0); }
+
+/* ---------- inputs ---------- */
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--bg-card); border: 1.5px dashed var(--border-lt);
+    border-radius: 12px;
+}
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accent-2); }
+.stSlider [role="slider"] { background: var(--accent) !important; }
+[data-testid="stSliderTickBarMin"], [data-testid="stSliderTickBarMax"] {
+    color: var(--text-faint) !important;
+}
+
+/* ---------- alerts ---------- */
+[data-testid="stAlert"] {
+    border-radius: 10px; border: 1px solid var(--border);
+}
+
+/* ---------- code blocks ---------- */
+[data-testid="stCode"] {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border); border-radius: 12px;
+}
+[data-testid="stCode"] pre, [data-testid="stCode"] code,
+[data-testid="stCode"] span {
+    background: transparent !important; color: var(--text) !important;
+}
+
+/* ---------- progress ---------- */
+[data-testid="stProgress"] > div > div > div {
+    background: linear-gradient(90deg, #22c55e, #38bdf8);
+}
+
+/* ---------- sidebar section headers ---------- */
+.sb-section {
+    font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-faint) !important;
+    margin: 1.1rem 0 0.5rem;
+}
+.sb-section:first-of-type { margin-top: 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -394,18 +522,29 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
 
 # Header
 st.markdown("""
-<h1 style='text-align:center;color:#22c55e;'>
-🚗 UNLET-ADAS
-</h1>
-<p style='text-align:center;color:#94a3b8;font-size:1.1rem;'>
-Real-Time Low-Light Enhancement for Intelligent Vehicle Systems
-</p>
-<p style='text-align:center;color:#64748b;'>
-B.E. Major Project | SJBIT Bengaluru | CSE 2025-26
-</p>
+<div class='hero-wrap'>
+  <h1 class='hero-title'>🚗 UNLET-ADAS</h1>
+  <p class='hero-sub'>Real-Time Low-Light Enhancement for Intelligent Vehicle Systems</p>
+  <p class='hero-meta'>B.E. Major Project &nbsp;·&nbsp; SJBIT Bengaluru &nbsp;·&nbsp; CSE 2025&ndash;26</p>
+  <div class='badge-row'>
+    <span class='badge-pill'>⚡ Zero-DCE++</span>
+    <span class='badge-pill'>🎯 CBAM Attention</span>
+    <span class='badge-pill'>🔍 YOLOv8 Detection</span>
+    <span class='badge-pill'>🛣️ Lane Detection</span>
+    <span class='badge-pill'>📡 Live WebRTC Stream</span>
+  </div>
+</div>
 """, unsafe_allow_html=True)
-st.markdown("---")
 
+st.sidebar.markdown(
+    "<div style='text-align:center;padding-bottom:0.5rem;'>"
+    "<span style='font-size:1.4rem;font-weight:800;'>🚗 UNLET-ADAS</span><br>"
+    "<span style='color:var(--text-faint);font-size:0.78rem;'>Control Panel</span>"
+    "</div><hr style='margin:0 0 0.75rem;border-color:var(--border);'>",
+    unsafe_allow_html=True)
+
+st.sidebar.markdown("<div class='sb-section'>⚙️ Detection Settings</div>",
+                     unsafe_allow_html=True)
 det_model_choice = st.sidebar.selectbox(
     'Detector Model', ['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'],
     index=1,
@@ -417,25 +556,39 @@ with st.spinner('Loading models...'):
     yolo, has_yolo = load_detector(det_model_choice)
     pothole_yolo, has_pothole = load_pothole_detector()
 
-# Sidebar
-st.sidebar.markdown("## System Info")
+adaptive_mode = st.sidebar.checkbox(
+    'Adaptive Day/Night Mode', value=True,
+    help='Automatically reduces enhancement strength on '
+         'already well-lit (daytime) frames instead of '
+         'over-brightening them, while still fully enhancing '
+         'dark, night, or shaded hillside footage.')
+det_conf = st.sidebar.slider(
+    'Detection Confidence', 0.1, 0.9, 0.25, 0.05)
+det_imgsz = st.sidebar.select_slider(
+    'Detection Resolution', options=[320, 480, 640, 832, 960],
+    value=640,
+    help='Higher resolution improves detection of small/far '
+         'objects (pedestrians, distant vehicles) at some speed cost.')
+
+st.sidebar.markdown("<div class='sb-section'>🖥️ System Status</div>",
+                     unsafe_allow_html=True)
 if 'cuda' in str(DEVICE):
     st.sidebar.success(f"GPU: {torch.cuda.get_device_name(0)}")
 else:
     st.sidebar.info("Running on CPU")
-st.sidebar.code(status)
+st.sidebar.caption(status)
 if has_yolo:
-    st.sidebar.success(f"{det_model_choice} Detection Ready")
+    st.sidebar.success(f"{det_model_choice} detection ready")
 else:
     st.sidebar.warning("YOLOv8 not available")
 if has_pothole:
-    st.sidebar.success("Pothole Detector Ready")
+    st.sidebar.success("Pothole detector ready")
 else:
     st.sidebar.info(
-        "Pothole Detector not trained — see src/train_pothole.py")
-st.sidebar.markdown("---")
-st.sidebar.markdown("""
-### About
+        "Pothole detector not trained — see src/train_pothole.py")
+
+with st.sidebar.expander("ℹ️ About This Project"):
+    st.markdown("""
 **Model:** Zero-DCE++ + CBAM Attention
 
 **Components:**
@@ -456,20 +609,6 @@ st.sidebar.markdown("""
 
 **GitHub:** [DEEK-SHITH/UNLET-ADAS](https://github.com/DEEK-SHITH/UNLET-ADAS)
 """)
-
-adaptive_mode = st.sidebar.checkbox(
-    'Adaptive Day/Night Mode', value=True,
-    help='Automatically reduces enhancement strength on '
-         'already well-lit (daytime) frames instead of '
-         'over-brightening them, while still fully enhancing '
-         'dark, night, or shaded hillside footage.')
-det_conf = st.sidebar.slider(
-    'Detection Confidence', 0.1, 0.9, 0.25, 0.05)
-det_imgsz = st.sidebar.select_slider(
-    'Detection Resolution', options=[320, 480, 640, 832, 960],
-    value=640,
-    help='Higher resolution improves detection of small/far '
-         'objects (pedestrians, distant vehicles) at some speed cost.')
 
 tab1, tab2, tab_live, tab3 = st.tabs([
     "🖼️ Image Enhancement",
