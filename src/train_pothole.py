@@ -64,7 +64,28 @@ def download_dataset(api_key, dest_dir):
     # rf.workspace(...).project(...) snippet Roboflow generates there.
     version = project.version(1)
     dataset = version.download('yolov8', location=dest_dir)
-    return dataset.location
+
+    location = dataset.location
+    # Roboflow's SDK has, across versions, sometimes placed the export
+    # directly in `location` and sometimes nested it one level deeper
+    # (e.g. location/<project>-<version>/data.yaml) despite the
+    # explicit `location=` argument above. Search for data.yaml rather
+    # than assume where it landed, so a download that actually
+    # succeeded doesn't look like a failure just because of a path
+    # mismatch.
+    if os.path.exists(os.path.join(location, 'data.yaml')):
+        return location
+    for root, _, files in os.walk(location):
+        if 'data.yaml' in files:
+            return root
+
+    raise RuntimeError(
+        f"Roboflow reported the dataset was downloaded to '{location}' "
+        "but no data.yaml was found anywhere under it. This usually "
+        "means the download itself failed silently rather than the "
+        "file just being in an unexpected subfolder — double check "
+        "your Roboflow API key and network connection, then look at "
+        "the download log printed above this error for the real cause.")
 
 
 def train(args):
