@@ -595,15 +595,26 @@ with st.sidebar.expander("ℹ️ About This Project"):
     st.markdown("""
 **Model:** Zero-DCE++ + CBAM Attention
 
-**Components:**
-- Channel Attention
-- Spatial Attention
+**Enhancement:**
+- Channel + Spatial Attention
 - 8-iteration curve enhancement
 - Full-resolution curve application (no blur)
 - Scene-adaptive day/night blending
 - Bright-pixel LAB color-cast correction
-- Classical lane detection (Canny + Hough)
 - Perceptual + SSIM + Color loss
+
+**Perception:**
+- YOLOv8 object detection (n/s/m selectable)
+- ByteTrack multi-object tracking (persistent IDs)
+- Classical lane detection (Canny + Hough)
+- Proximity risk estimation (LOW/MEDIUM/HIGH)
+- Optional fine-tuned pothole detector
+
+**App:**
+- Image, Video, and real-time Live Camera (WebRTC) tabs
+- Cancellable, chunked video processing — resilient to
+  variable-frame-rate footage, partial output always saved
+- Live stream side-by-side comparison with a Fast/Sharp quality toggle
 
 **Training:** LOL Dataset (485 pairs)
 
@@ -1280,7 +1291,7 @@ with tab3:
     st.markdown("""
 ### System Architecture
 ```
-Video Input (Night / Hilly / Day)
+Input (Image / Video / Live Camera — Night / Hilly / Day)
       ↓
 Zero-DCE++ CBAM Curve Estimation (low-res proxy)
       ↓
@@ -1290,11 +1301,50 @@ Scene-Adaptive Blend (skips over-brightening daylight)
       ↓
 Bright-Pixel LAB Color-Cast Correction
       ↓
-Lane Detection (Canny + Hough)  +  YOLOv8 Detection (n/s/m selectable)
+Lane Detection (Canny + Hough)  +  YOLOv8 Detection + ByteTrack Tracking
+      ↓  (+ optional Pothole Detector)
+Proximity Risk Estimation (LOW / MEDIUM / HIGH)
       ↓
-Enhanced Output + Lanes + Detections
+Enhanced Output + Lanes + Detections + Risk
 ```
     """)
+
+    st.markdown("---")
+    st.markdown("""
+### What's Implemented So Far
+
+**Core enhancement**
+- Zero-DCE++ + CBAM, trained from scratch on the LOL dataset
+  (21,769 parameters — CPU-deployable, no GPU required at inference)
+- Full-resolution curve application, avoiding the resize-induced
+  blur that a naive enhance-then-upscale pipeline would introduce
+
+**Perception & safety**
+- YOLOv8 object detection (n/s/m selectable from the sidebar) across
+  ADAS-relevant COCO classes
+- ByteTrack multi-object tracking with persistent IDs across frames
+- Classical Canny/Hough lane detection
+- Geometry-based proximity risk heuristic (LOW/MEDIUM/HIGH)
+- Optional dedicated pothole detector (separate fine-tuned YOLOv8
+  single-class model — trainable via `src/train_pothole.py`)
+
+**Application**
+- **Image tab** — upload, enhance, detect, side-by-side compare
+- **Video tab** — chunked and genuinely cancellable processing
+  (partial output stays downloadable even if cancelled), resilient
+  to variable-frame-rate footage and read hiccups, with a fast mode
+  that halves detection cost by skipping every other frame
+- **Live Camera tab** — snapshot mode plus a real-time WebRTC live
+  stream with side-by-side original/enhanced comparison and a
+  Fast (480p) / Sharp (720p) quality toggle
+- Custom dark theme, responsive layout, clear status/progress
+  messaging throughout
+
+**Deployment**
+- Live on Streamlit Community Cloud, tracking this repo's `main`
+  branch
+    """)
+
     st.markdown("---")
     st.info(
         "Live Demo: "
