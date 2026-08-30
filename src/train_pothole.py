@@ -46,13 +46,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 
-def download_dataset(api_key, dest_dir):
+def download_dataset(api_key, dest_dir, retries=3):
     """
     Download the Roboflow public pothole dataset in YOLOv8 format.
     This is the same 665-image Chitholian pothole dataset listed at
     public.roboflow.com/object-detection/pothole, mirrored on
     Universe under Roboflow's own account.
     """
+    import time
     from roboflow import Roboflow
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -63,7 +64,25 @@ def download_dataset(api_key, dest_dir):
     # click "Download Dataset" -> YOLOv8, and copy the exact
     # rf.workspace(...).project(...) snippet Roboflow generates there.
     version = project.version(1)
-    dataset = version.download('yolov8', location=dest_dir)
+
+    # Roboflow's download occasionally stalls or drops the connection
+    # mid-transfer with no exception raised, silently leaving an
+    # incomplete/empty export on disk. Retry a few times before
+    # concluding the download itself is broken.
+    dataset = None
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            dataset = version.download('yolov8', location=dest_dir)
+            break
+        except Exception as e:
+            last_err = e
+            print(f'Download attempt {attempt}/{retries} failed: {e}')
+            if attempt < retries:
+                time.sleep(3)
+    if dataset is None:
+        raise RuntimeError(
+            f'Roboflow download failed after {retries} attempts: {last_err}')
 
     location = dataset.location
     # Roboflow's SDK has, across versions, sometimes placed the export
