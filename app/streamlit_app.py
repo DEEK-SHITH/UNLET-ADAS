@@ -410,7 +410,7 @@ def redraw_cached_detections(image_np, det_list):
 
 
 def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
-                        pothole_yolo, has_pothole, chunk_size=8):
+                        pothole_yolo, has_pothole, chunk_size=16):
     """
     Process up to chunk_size more frames of an in-progress video job
     (see the Video tab), mutating job in place.
@@ -454,9 +454,13 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
     if fb:
         # Curves are estimated on a small proxy and applied at the
         # original W_v x H_v resolution, so enhanced frames stay sharp
-        # instead of being blurred by a resize round-trip.
+        # instead of being blurred by a resize round-trip. 128 matches
+        # the proxy size already used for the live stream — curve
+        # estimation is much cheaper there with no visible quality
+        # loss, since the curves are always applied at full resolution
+        # regardless of proxy size.
         enhanced = enhance_frame_batch(
-            model, DEVICE, fb, size=256, adaptive=p['adaptive_mode'])
+            model, DEVICE, fb, size=128, adaptive=p['adaptive_mode'])
 
         for orig_bgr, enh_rgb in zip(ob, enhanced):
             # In fast mode, the expensive model passes (pothole YOLO,
