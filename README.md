@@ -3,6 +3,7 @@
 
 [![Demo](https://img.shields.io/badge/🌐-Live_Demo-green)](https://deek-shith-unlet-adas-streamlit-app.streamlit.app)
 [![GitHub](https://img.shields.io/badge/GitHub-DEEK--SHITH-black)](https://github.com/DEEK-SHITH/UNLET-ADAS)
+[![Tests](https://github.com/DEEK-SHITH/UNLET-ADAS/actions/workflows/test.yml/badge.svg)](https://github.com/DEEK-SHITH/UNLET-ADAS/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 > **B.E. Major Project | SJBIT Bengaluru | Computer Science | 2025–26**
@@ -180,6 +181,18 @@ enhance_video(
 )
 ```
 
+### Run the Automated Tests
+End-to-end tests drive the actual Streamlit app in a headless browser
+(Playwright) and check that all three tabs — Image, Video, Live
+Camera — load and, for Image/Video, genuinely process input through
+the real enhancement + detection pipeline. Runs automatically on every
+push via [GitHub Actions](.github/workflows/test.yml).
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+playwright install --with-deps chromium
+pytest tests/ -v
+```
+
 ---
 
 ## 📁 Project Structure
@@ -200,7 +213,13 @@ UNLET-ADAS/
 │ ├── metric_comparison.png # PSNR/SSIM charts
 │ ├── training_curves.png # Loss curves
 │ └── video_frames.png # Before/after frames
+├── tests/
+│ ├── conftest.py # Test fixtures (app server, browser, test data)
+│ └── test_app.py # End-to-end UI tests (Playwright)
+├── .github/workflows/
+│ └── test.yml # CI — runs tests/ on every push
 ├── requirements.txt
+├── requirements-dev.txt # Extra deps for running tests/ (CI only)
 └── README.md
 
 

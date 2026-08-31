@@ -1,0 +1,5 @@
+# Extra dependencies for running the automated tests in tests/ (CI only —
+# not needed for the deployed Streamlit app itself, see requirements.txt).
+pytest>=7.4.0
+playwright>=1.40.0
+requests>=2.31.0

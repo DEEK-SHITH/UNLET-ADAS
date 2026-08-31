@@ -1,6 +1,9 @@
 # Auto-downloaded Ultralytics YOLO checkpoints (fetched at runtime, not project source)
 /yolov8*.pt
 
+# Screenshots captured by the end-to-end tests (tests/), for CI artifact upload only
+/test-artifacts/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
