@@ -52,6 +52,26 @@ def scene_blend_weight(luminance, dark_thresh=0.35, bright_thresh=0.55):
     return (bright_thresh - luminance) / (bright_thresh - dark_thresh)
 
 
+def scene_aware_conf(base_conf, luminance, dark_thresh=0.35,
+                      bright_thresh=0.55, night_boost=0.10):
+    """
+    Raise the YOLO confidence threshold on dark/night frames.
+
+    Our own evaluation (paper Section VII-C) found more false
+    positives — reflective roadside posts mistaken for objects — at
+    the 0.25 default threshold on night footage. Rather than a flat
+    0.35 default that would also over-suppress daytime detections,
+    this scales the same day/night luminance ramp already used for
+    enhancement strength (scene_blend_weight) onto the confidence
+    threshold: full +night_boost at or below dark_thresh (so a 0.25
+    base becomes 0.35 at night, matching the paper's suggestion),
+    no change at or above bright_thresh (daylight), smooth ramp
+    between the two (dusk, shaded hillside roads).
+    """
+    weight = scene_blend_weight(luminance, dark_thresh, bright_thresh)
+    return min(base_conf + night_boost * weight, 0.95)
+
+
 def correct_color_cast(frame_uint8, strength=0.6, lum_pctl=60, max_shift=18):
     """
     Mild white-balance correction in LAB space, using only the

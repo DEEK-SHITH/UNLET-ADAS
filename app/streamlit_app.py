@@ -427,7 +427,7 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
     the job is finished (ran out of frames, hit its frame cap, or was
     cancelled).
     """
-    from src.enhance import enhance_frame_batch
+    from src.enhance import enhance_frame_batch, scene_aware_conf
     from src.lane_detection import detect_lanes, draw_lanes
 
     p = job['params']
@@ -471,6 +471,14 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
             # per-frame cost far more than the (already tiny) enhancer.
             run_heavy = (not p['vid_fast']) or (job['proc_idx'] % 4 == 0)
 
+            # Raise the confidence threshold on dark frames (paper
+            # Section VII-C — more false positives at low confidence
+            # on night footage); computed from the original,
+            # pre-enhancement frame so it tracks actual scene
+            # brightness rather than the already-brightened output.
+            orig_lum = orig_bgr.astype(np.float32).mean() / 255
+            frame_conf = scene_aware_conf(p['det_conf'], orig_lum)
+
             if p['vid_lanes']:
                 left_line, right_line = detect_lanes(enh_rgb)
                 if left_line is not None or right_line is not None:
@@ -479,7 +487,7 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
             if p['vid_pothole'] and has_pothole:
                 if run_heavy or not job['last_pot_boxes']:
                     pot_res = pothole_yolo(
-                        enh_rgb, conf=p['det_conf'],
+                        enh_rgb, conf=frame_conf,
                         imgsz=p['det_imgsz'], verbose=False)[0]
                     job['last_pot_boxes'] = [
                         (*map(int, box.xyxy[0]), float(box.conf[0]))
@@ -496,7 +504,7 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                 if run_heavy or not job['last_det_list']:
                     (enh_rgb, frame_counts, frame_ids, frame_risk,
                      job['last_det_list']) = track_and_draw(
-                        yolo, enh_rgb, conf=p['det_conf'], imgsz=p['det_imgsz'])
+                        yolo, enh_rgb, conf=frame_conf, imgsz=p['det_imgsz'])
                     job['all_track_ids'] |= frame_ids
                     job['any_high_risk'] = job['any_high_risk'] or frame_risk
                     for k, v in frame_counts.items():
@@ -569,7 +577,12 @@ adaptive_mode = st.sidebar.checkbox(
          'over-brightening them, while still fully enhancing '
          'dark, night, or shaded hillside footage.')
 det_conf = st.sidebar.slider(
-    'Detection Confidence', 0.1, 0.9, 0.25, 0.05)
+    'Detection Confidence', 0.1, 0.9, 0.25, 0.05,
+    help='Base threshold for daylight scenes. On dark/night frames '
+         'this is auto-raised by up to +0.10 (e.g. 0.25 → 0.35) to '
+         'cut false positives on reflective roadside posts, seen in '
+         "our own evaluation (paper Section VII-C) at this default "
+         'on night footage — daylight frames are unaffected.')
 det_imgsz = st.sidebar.select_slider(
     'Detection Resolution', options=[320, 480, 640, 832, 960],
     value=640,
@@ -607,6 +620,8 @@ with st.sidebar.expander("ℹ️ About This Project"):
 
 **Perception:**
 - YOLOv8 object detection (n/s/m selectable)
+- Scene-aware confidence threshold (auto-raised at night to cut
+  false positives on reflective roadside posts)
 - ByteTrack multi-object tracking (persistent IDs)
 - Classical lane detection (Canny + Hough)
 - Proximity risk estimation (LOW/MEDIUM/HIGH)
@@ -695,10 +710,18 @@ with tab1:
             counts = {}
             high_risk = False
 
+            from src.enhance import scene_aware_conf
+            eff_conf = scene_aware_conf(det_conf, orig_b)
+            if eff_conf > det_conf + 1e-3:
+                st.caption(
+                    f"🌙 Dark scene detected — confidence threshold "
+                    f"auto-raised {det_conf:.2f} → {eff_conf:.2f} to cut "
+                    "false positives on reflective roadside posts.")
+
             if use_detection and has_yolo and HAS_CV2:
                 with st.spinner("Running YOLOv8..."):
                     det_img, det_list, counts, high_risk = detect_and_draw(
-                        yolo, enh_arr, conf=det_conf, imgsz=det_imgsz)
+                        yolo, enh_arr, conf=eff_conf, imgsz=det_imgsz)
 
             lane_found = False
             if use_lanes and HAS_CV2:
@@ -712,7 +735,7 @@ with tab1:
             if use_pothole and has_pothole and HAS_CV2:
                 with st.spinner("Running pothole detector..."):
                     pot_res = pothole_yolo(
-                        det_img, conf=det_conf, imgsz=det_imgsz,
+                        det_img, conf=eff_conf, imgsz=det_imgsz,
                         verbose=False)[0]
                     pot_bgr = cv2.cvtColor(det_img, cv2.COLOR_RGB2BGR)
                     for box in pot_res.boxes:
@@ -1138,11 +1161,14 @@ with tab_live:
                     adaptive=adaptive_mode, proxy_size=128))
 
                 if live_stream_detect and has_yolo:
+                    from src.enhance import scene_aware_conf
+                    live_conf = scene_aware_conf(
+                        det_conf, img_bgr.astype(np.float32).mean() / 255)
                     # Capped well below the sidebar's det_imgsz — live
                     # frame-by-frame inference needs to stay fast or
                     # the stream stalls, unlike a one-shot image/video.
                     enh_rgb, _, _, _ = detect_and_draw(
-                        yolo, enh_rgb, conf=det_conf,
+                        yolo, enh_rgb, conf=live_conf,
                         imgsz=min(det_imgsz, 320))
 
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
@@ -1211,14 +1237,18 @@ with tab_live:
         pil_live = Image.open(live_shot).convert('RGB')
         with st.spinner("Enhancing + detecting..."):
             t0 = time.time()
+            live_orig_b = np.array(pil_live).mean() / 255
             enh_live = enhance_pil(model, DEVICE, pil_live, adaptive=adaptive_mode)
             live_arr = np.array(enh_live)
+
+            from src.enhance import scene_aware_conf
+            live_eff_conf = scene_aware_conf(det_conf, live_orig_b)
 
             live_high_risk = False
             live_pothole_count = 0
             if has_yolo and HAS_CV2:
                 live_arr, live_dets, _, live_high_risk = detect_and_draw(
-                    yolo, live_arr, conf=det_conf, imgsz=det_imgsz)
+                    yolo, live_arr, conf=live_eff_conf, imgsz=det_imgsz)
             else:
                 live_dets = []
 
@@ -1230,7 +1260,7 @@ with tab_live:
 
             if has_pothole and HAS_CV2:
                 pot_res = pothole_yolo(
-                    live_arr, conf=det_conf, imgsz=det_imgsz, verbose=False)[0]
+                    live_arr, conf=live_eff_conf, imgsz=det_imgsz, verbose=False)[0]
                 pot_bgr = cv2.cvtColor(live_arr, cv2.COLOR_RGB2BGR)
                 for box in pot_res.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -1326,6 +1356,10 @@ Enhanced Output + Lanes + Detections + Risk
 **Perception & safety**
 - YOLOv8 object detection (n/s/m selectable from the sidebar) across
   ADAS-relevant COCO classes
+- Scene-aware confidence threshold — auto-raised on dark/night frames
+  (up to +0.10, e.g. 0.25 → 0.35) to cut false positives on
+  reflective roadside posts flagged in our own evaluation (paper
+  Section VII-C); unaffected on daylight frames
 - ByteTrack multi-object tracking with persistent IDs across frames
 - Classical Canny/Hough lane detection
 - Geometry-based proximity risk heuristic (LOW/MEDIUM/HIGH)
