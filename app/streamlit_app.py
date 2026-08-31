@@ -149,6 +149,25 @@ h1, h2, h3, h4, p, label, span, .stMarkdown { color: var(--text); }
 }
 .stButton>button:active, .stDownloadButton>button:active { transform: translateY(0); }
 
+/* Cancel is the only "primary"-kind button in the app — every other
+   action (Enhance, Download, Turn Camera On...) is a "go" action in
+   the shared green/blue gradient above, so Cancel gets a distinct
+   red "stop" look with a soft pulse to make it unmistakable at a
+   glance, especially mid-run when it matters most. */
+.stButton [data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #ef4444, #b91c1c) !important;
+    box-shadow: 0 2px 14px rgba(239, 68, 68, 0.4) !important;
+    animation: cancel-pulse 1.8s ease-in-out infinite;
+}
+.stButton [data-testid="stBaseButton-primary"]:hover {
+    filter: brightness(1.1);
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.6) !important;
+}
+@keyframes cancel-pulse {
+    0%, 100% { box-shadow: 0 2px 14px rgba(239, 68, 68, 0.4); }
+    50%      { box-shadow: 0 2px 24px rgba(239, 68, 68, 0.7); }
+}
+
 /* ---------- inputs ---------- */
 [data-testid="stFileUploaderDropzone"] {
     background: var(--bg-card); border: 1.5px dashed var(--border-lt);
@@ -988,7 +1007,8 @@ streamlit run app/streamlit_app.py
                         "set by the 'Max seconds to process' slider before "
                         "you clicked Enhance. Cancel and raise it to cover "
                         "more of the video.")
-                if st.button("🛑 Cancel Enhancement", key='btn_cancel_vid'):
+                if st.button("🛑 Cancel Enhancement", key='btn_cancel_vid',
+                             type='primary'):
                     job['cancel_requested'] = True
 
                 more = process_video_chunk(
