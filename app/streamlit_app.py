@@ -410,7 +410,7 @@ def redraw_cached_detections(image_np, det_list):
 
 
 def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
-                        pothole_yolo, has_pothole, chunk_size=16):
+                        pothole_yolo, has_pothole, chunk_size=24):
     """
     Process up to chunk_size more frames of an in-progress video job
     (see the Video tab), mutating job in place.
@@ -464,10 +464,12 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
 
         for orig_bgr, enh_rgb in zip(ob, enhanced):
             # In fast mode, the expensive model passes (pothole YOLO,
-            # detection + tracking) only run on every other frame; the
-            # skipped frame reuses the last frame's boxes so the
-            # output still looks fully annotated.
-            run_heavy = (not p['vid_fast']) or (job['proc_idx'] % 2 == 0)
+            # detection + tracking) only run on 1 of every 4 frames; the
+            # 3 skipped frames in between reuse the last computed boxes
+            # so the output still looks fully annotated. This is the
+            # single biggest lever on CPU — YOLO inference dominates
+            # per-frame cost far more than the (already tiny) enhancer.
+            run_heavy = (not p['vid_fast']) or (job['proc_idx'] % 4 == 0)
 
             if p['vid_lanes']:
                 left_line, right_line = detect_lanes(enh_rgb)
@@ -901,14 +903,16 @@ streamlit run app/streamlit_app.py
                 help=None if has_pothole else
                 "Needs a trained pothole model — see src/train_pothole.py")
             vid_fast = st.checkbox(
-                "⚡ Faster processing (detect objects every 2nd frame)",
+                "⚡ Faster processing (detect objects every 4th frame)",
                 value=True, key='vid_fast',
-                help="Object detection is the slowest step. In fast "
-                     "mode it runs on every other frame and the boxes "
-                     "are carried over onto the frame in between, so "
-                     "the video still looks fully annotated but takes "
-                     "roughly half the time. Turn off to run detection "
-                     "on every single frame instead.")
+                help="Object detection is by far the slowest step. In "
+                     "fast mode it only runs on 1 of every 4 frames and "
+                     "the boxes are carried over onto the 3 frames in "
+                     "between, so the video still looks fully annotated "
+                     "but detection cost drops to about a quarter. Turn "
+                     "off to run detection on every single frame instead "
+                     "(much slower, marginally more precise per-frame "
+                     "box positions).")
 
             if st.button("🚀 Enhance Video", key='btn_vid'):
                 # Reset ByteTrack state so IDs from a previous run
