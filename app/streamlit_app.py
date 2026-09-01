@@ -272,6 +272,20 @@ def load_pothole_detector():
         return None, False
 
 
+@st.cache_resource
+def load_depth_model():
+    """
+    Loads MiDaS small for depth-based proximity risk (see
+    src/depth.py). Downloads on first run via torch.hub, which needs
+    outbound internet access to GitHub — returns (None, None, False)
+    on any failure so the app falls back to the box-geometry risk
+    heuristic instead of crashing.
+    """
+    from src.depth import load_midas
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return load_midas(device)
+
+
 @torch.no_grad()
 def enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
     """
@@ -306,15 +320,17 @@ RISK_COLORS = {
 }
 
 
-def estimate_risk(x1, y1, x2, y2, frame_w, frame_h):
+def estimate_risk_geometry(x1, y1, x2, y2, frame_w, frame_h):
     """
     Rough collision-proximity estimate from box geometry alone (no
     depth sensor / calibration available): a box that fills a large
     fraction of the frame's height is close to the camera, and one
     centered in the middle third of the frame is roughly in the
     ego vehicle's path. This is a heuristic, not a measured distance
-    — good enough to flag "large and in front of you" for a demo,
-    not for real collision avoidance.
+    — a large box could be a big nearby car OR a large but distant
+    truck, and box size alone can't tell them apart. Used as the
+    fallback when no depth model is available (see
+    estimate_risk_depth for the MiDaS-based replacement).
     """
     box_h_frac = (y2 - y1) / max(frame_h, 1)
     cx = (x1 + x2) / 2
@@ -324,6 +340,32 @@ def estimate_risk(x1, y1, x2, y2, frame_w, frame_h):
     if box_h_frac > 0.18 or (in_path and box_h_frac > 0.10):
         return 'MEDIUM'
     return 'LOW'
+
+
+def estimate_risk_depth(depth_map, x1, y1, x2, y2):
+    """
+    Proximity-risk estimate from an actual MiDaS depth map instead of
+    box geometry: looks up the average relative depth (0..1, higher =
+    closer) under the box's own footprint rather than inferring
+    closeness from how large the box looks. Thresholds are against
+    the per-frame-normalized depth (see estimate_depth_map), not a
+    metric distance — MiDaS gives relative near/far ordering, not
+    calibrated meters.
+    """
+    from src.depth import sample_proximity, classify_proximity
+    proximity = sample_proximity(depth_map, x1, y1, x2, y2)
+    return classify_proximity(proximity)
+
+
+def estimate_risk(x1, y1, x2, y2, frame_w, frame_h, depth_map=None):
+    """
+    Dispatches to the depth-based estimate when a MiDaS depth map is
+    available for this frame, otherwise falls back to the geometry
+    heuristic (e.g. depth model failed to load, or was turned off).
+    """
+    if depth_map is not None:
+        return estimate_risk_depth(depth_map, x1, y1, x2, y2)
+    return estimate_risk_geometry(x1, y1, x2, y2, frame_w, frame_h)
 
 
 def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
@@ -340,9 +382,11 @@ def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
         0.55, (255, 255, 255), 2, cv2.LINE_AA)
 
 
-def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
+def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     """Single-frame detection (no temporal tracking — see track_and_draw
-    for video, which additionally assigns persistent IDs)."""
+    for video, which additionally assigns persistent IDs). Pass
+    depth_map (see src.depth.estimate_depth_map) to use actual MiDaS
+    depth for proximity risk instead of the box-geometry heuristic."""
     results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     h, w = image_np.shape[:2]
@@ -356,7 +400,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
         name, _ = ADAS_CLASSES[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        risk = estimate_risk(x1, y1, x2, y2, w, h)
+        risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
         high_risk = high_risk or risk == 'HIGH'
         _draw_detection(
             img_bgr, x1, y1, x2, y2,
@@ -370,13 +414,14 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640):
     return ann, det_list, counts, high_risk
 
 
-def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
+def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     """
     Like detect_and_draw, but uses YOLOv8's built-in ByteTrack
     (persist=True keeps the tracker's internal state alive across
     calls on the same model instance) to assign each object a stable
     ID across frames, instead of re-detecting from scratch every
-    frame with no memory of what was seen before.
+    frame with no memory of what was seen before. Pass depth_map to
+    use actual MiDaS depth for proximity risk (see detect_and_draw).
     """
     results = yolo.track(
         image_np, conf=conf, imgsz=imgsz, persist=True,
@@ -395,7 +440,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640):
         name, _ = ADAS_CLASSES[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        risk = estimate_risk(x1, y1, x2, y2, w, h)
+        risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
         high_risk = high_risk or risk == 'HIGH'
         track_id = int(ids[i]) if ids is not None else None
         id_bit = f'#{track_id} ' if track_id is not None else ''
@@ -429,7 +474,9 @@ def redraw_cached_detections(image_np, det_list):
 
 
 def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
-                        pothole_yolo, has_pothole, chunk_size=24):
+                        pothole_yolo, has_pothole,
+                        midas_model=None, midas_transform=None,
+                        has_depth=False, chunk_size=24):
     """
     Process up to chunk_size more frames of an in-progress video job
     (see the Video tab), mutating job in place.
@@ -520,10 +567,17 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
 
             if p['vid_detect'] and has_yolo:
+                depth_map = None
+                if (run_heavy and p.get('use_depth_risk') and has_depth):
+                    from src.depth import estimate_depth_map
+                    depth_map = estimate_depth_map(
+                        midas_model, midas_transform, DEVICE, enh_rgb)
+
                 if run_heavy or not job['last_det_list']:
                     (enh_rgb, frame_counts, frame_ids, frame_risk,
                      job['last_det_list']) = track_and_draw(
-                        yolo, enh_rgb, conf=frame_conf, imgsz=p['det_imgsz'])
+                        yolo, enh_rgb, conf=frame_conf, imgsz=p['det_imgsz'],
+                        depth_map=depth_map)
                     job['all_track_ids'] |= frame_ids
                     job['any_high_risk'] = job['any_high_risk'] or frame_risk
                     for k, v in frame_counts.items():
@@ -588,6 +642,7 @@ with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
     yolo, has_yolo = load_detector(det_model_choice)
     pothole_yolo, has_pothole = load_pothole_detector()
+    midas_model, midas_transform, has_depth = load_depth_model()
 
 adaptive_mode = st.sidebar.checkbox(
     'Adaptive Day/Night Mode', value=True,
@@ -607,6 +662,19 @@ det_imgsz = st.sidebar.select_slider(
     value=640,
     help='Higher resolution improves detection of small/far '
          'objects (pedestrians, distant vehicles) at some speed cost.')
+use_depth_risk = st.sidebar.checkbox(
+    '🔭 Depth-based proximity risk (MiDaS)', value=has_depth,
+    disabled=not has_depth,
+    help='Estimates actual relative distance to each detected object '
+         'via a MiDaS monocular depth pass, instead of guessing '
+         'proximity from box size alone — a large box could be a '
+         'big nearby car or a large but distant truck, and box size '
+         "can't tell them apart. Adds a second CPU inference pass "
+         'per frame, so turn it off for extra speed.'
+         if has_depth else
+         'MiDaS depth model unavailable (needs internet access on '
+         'first run) — falling back to the box-geometry risk '
+         'heuristic.')
 
 st.sidebar.markdown("<div class='sb-section'>🖥️ System Status</div>",
                      unsafe_allow_html=True)
@@ -624,6 +692,12 @@ if has_pothole:
 else:
     st.sidebar.info(
         "Pothole detector not trained — see src/train_pothole.py")
+if has_depth:
+    st.sidebar.success("MiDaS depth model ready")
+else:
+    st.sidebar.info(
+        "MiDaS depth model unavailable — using box-geometry risk "
+        "heuristic instead")
 
 with st.sidebar.expander("ℹ️ About This Project"):
     st.markdown("""
@@ -643,7 +717,8 @@ with st.sidebar.expander("ℹ️ About This Project"):
   false positives on reflective roadside posts)
 - ByteTrack multi-object tracking (persistent IDs)
 - Classical lane detection (Canny + Hough)
-- Proximity risk estimation (LOW/MEDIUM/HIGH)
+- Proximity risk estimation (LOW/MEDIUM/HIGH) from an actual MiDaS
+  monocular depth pass, not just box size
 - Optional fine-tuned pothole detector
 
 **App:**
@@ -738,9 +813,16 @@ with tab1:
                     "false positives on reflective roadside posts.")
 
             if use_detection and has_yolo and HAS_CV2:
+                img_depth_map = None
+                if use_depth_risk and has_depth:
+                    with st.spinner("Estimating depth..."):
+                        from src.depth import estimate_depth_map
+                        img_depth_map = estimate_depth_map(
+                            midas_model, midas_transform, DEVICE, enh_arr)
                 with st.spinner("Running YOLOv8..."):
                     det_img, det_list, counts, high_risk = detect_and_draw(
-                        yolo, enh_arr, conf=eff_conf, imgsz=det_imgsz)
+                        yolo, enh_arr, conf=eff_conf, imgsz=det_imgsz,
+                        depth_map=img_depth_map)
 
             lane_found = False
             if use_lanes and HAS_CV2:
@@ -990,6 +1072,7 @@ streamlit run app/streamlit_app.py
                         'vid_detect': vid_detect, 'vid_fast': vid_fast,
                         'det_conf': det_conf, 'det_imgsz': det_imgsz,
                         'adaptive_mode': adaptive_mode,
+                        'use_depth_risk': use_depth_risk,
                     },
                 }
                 st.rerun()
@@ -1020,7 +1103,8 @@ streamlit run app/streamlit_app.py
                 # or slow, worse the larger chunk_size got.
                 more = False if job['cancel_requested'] else process_video_chunk(
                     job, model, DEVICE, yolo, has_yolo,
-                    pothole_yolo, has_pothole)
+                    pothole_yolo, has_pothole,
+                    midas_model, midas_transform, has_depth)
 
                 if more:
                     st.rerun()
@@ -1194,6 +1278,11 @@ with tab_live:
                     # Capped well below the sidebar's det_imgsz — live
                     # frame-by-frame inference needs to stay fast or
                     # the stream stalls, unlike a one-shot image/video.
+                    # Depth-based risk is intentionally NOT run here —
+                    # this path already runs the enhancer every single
+                    # frame in real time; a third full network pass
+                    # per frame would stall the stream. It still uses
+                    # the box-geometry risk fallback (depth_map=None).
                     enh_rgb, _, _, _ = detect_and_draw(
                         yolo, enh_rgb, conf=live_conf,
                         imgsz=min(det_imgsz, 320))
@@ -1274,8 +1363,14 @@ with tab_live:
             live_high_risk = False
             live_pothole_count = 0
             if has_yolo and HAS_CV2:
+                live_depth_map = None
+                if use_depth_risk and has_depth:
+                    from src.depth import estimate_depth_map
+                    live_depth_map = estimate_depth_map(
+                        midas_model, midas_transform, DEVICE, live_arr)
                 live_arr, live_dets, _, live_high_risk = detect_and_draw(
-                    yolo, live_arr, conf=live_eff_conf, imgsz=det_imgsz)
+                    yolo, live_arr, conf=live_eff_conf, imgsz=det_imgsz,
+                    depth_map=live_depth_map)
             else:
                 live_dets = []
 
@@ -1364,6 +1459,8 @@ Bright-Pixel LAB Color-Cast Correction
       ↓
 Lane Detection (Canny + Hough)  +  YOLOv8 Detection + ByteTrack Tracking
       ↓  (+ optional Pothole Detector)
+MiDaS Monocular Depth Pass (per-box proximity lookup)
+      ↓
 Proximity Risk Estimation (LOW / MEDIUM / HIGH)
       ↓
 Enhanced Output + Lanes + Detections + Risk
@@ -1389,7 +1486,13 @@ Enhanced Output + Lanes + Detections + Risk
   Section VII-C); unaffected on daylight frames
 - ByteTrack multi-object tracking with persistent IDs across frames
 - Classical Canny/Hough lane detection
-- Geometry-based proximity risk heuristic (LOW/MEDIUM/HIGH)
+- Proximity risk estimation (LOW/MEDIUM/HIGH) from an actual MiDaS
+  small monocular depth pass on the enhanced frame — a per-box
+  relative-distance lookup rather than the earlier box-geometry
+  heuristic (a large box could be a big nearby car or a large but
+  distant truck; box size alone can't tell them apart). Falls back
+  to the geometry heuristic automatically if the depth model isn't
+  available (e.g. no internet on first run)
 - Optional dedicated pothole detector (separate fine-tuned YOLOv8
   single-class model — trainable via `src/train_pothole.py`)
 
