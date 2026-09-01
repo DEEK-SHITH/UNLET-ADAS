@@ -40,7 +40,7 @@ jobs:
         run: playwright install --with-deps chromium
 
       - name: Run end-to-end tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v -s
 
       - name: Upload test screenshots
         if: always()

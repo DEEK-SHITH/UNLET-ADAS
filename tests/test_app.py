@@ -105,4 +105,17 @@ def test_about_tab_loads(page):
     page.get_by_text('About UNLET-ADAS').wait_for(timeout=15000)
     page.get_by_text('System Architecture').wait_for(timeout=15000)
 
+    # Not an assertion — optional models (pothole, MiDaS depth) are
+    # allowed to be unavailable and the app is expected to fall back
+    # gracefully either way. This just makes their actual status
+    # visible in the CI log (pytest -s) instead of only in a
+    # downloaded screenshot, since torch.hub's first-run download
+    # depends on runner network access.
+    body_text = page.locator('body').inner_text()
+    for label in ('YOLOv8 not available', 'detection ready',
+                  'Pothole detector not trained', 'Pothole detector ready',
+                  'MiDaS depth model ready', 'MiDaS depth model unavailable'):
+        if label in body_text:
+            print(f'[model status] {label}')
+
     assert_no_app_error(page)
