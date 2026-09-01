@@ -220,6 +220,19 @@ ADAS_CLASSES = {
     11: ('Stop Sign',     (220,  20,  60)),
 }
 
+# Class map for the optional low-light-specialized detector (see
+# src/train_lowlight.py) — a different YOLO model with its own 0..4
+# class-id scheme (NOT COCO ids), covering only the 5 ADAS classes
+# ExDark actually has night-time training data for. Same colors as
+# the matching ADAS_CLASSES entries for visual consistency.
+LOWLIGHT_CLASSES = {
+    0: ('Person',     (50,  205,  50)),
+    1: ('Bicycle',    (255, 165,   0)),
+    2: ('Car',        ( 30, 144, 255)),
+    3: ('Motorcycle', (255, 100, 100)),
+    4: ('Bus',        (138,  43, 226)),
+}
+
 
 @st.cache_resource
 def load_enhancer():
@@ -382,11 +395,18 @@ def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
         0.55, (255, 255, 255), 2, cv2.LINE_AA)
 
 
-def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
+def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
+                     class_map=None):
     """Single-frame detection (no temporal tracking — see track_and_draw
     for video, which additionally assigns persistent IDs). Pass
     depth_map (see src.depth.estimate_depth_map) to use actual MiDaS
-    depth for proximity risk instead of the box-geometry heuristic."""
+    depth for proximity risk instead of the box-geometry heuristic.
+    Pass class_map (default ADAS_CLASSES) to interpret a different
+    model's class ids — e.g. LOWLIGHT_CLASSES for the optional
+    ExDark-fine-tuned detector, which uses its own 0..4 scheme, not
+    COCO ids."""
+    if class_map is None:
+        class_map = ADAS_CLASSES
     results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     h, w = image_np.shape[:2]
@@ -395,9 +415,9 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     high_risk = False
     for box in results.boxes:
         cls_id = int(box.cls[0])
-        if cls_id not in ADAS_CLASSES:
+        if cls_id not in class_map:
             continue
-        name, _ = ADAS_CLASSES[cls_id]
+        name, _ = class_map[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
@@ -414,7 +434,8 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     return ann, det_list, counts, high_risk
 
 
-def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
+def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
+                    class_map=None):
     """
     Like detect_and_draw, but uses YOLOv8's built-in ByteTrack
     (persist=True keeps the tracker's internal state alive across
@@ -422,7 +443,11 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     ID across frames, instead of re-detecting from scratch every
     frame with no memory of what was seen before. Pass depth_map to
     use actual MiDaS depth for proximity risk (see detect_and_draw).
+    Pass class_map (default ADAS_CLASSES) to interpret a different
+    model's class ids (see detect_and_draw).
     """
+    if class_map is None:
+        class_map = ADAS_CLASSES
     results = yolo.track(
         image_np, conf=conf, imgsz=imgsz, persist=True,
         tracker='bytetrack.yaml', verbose=False)[0]
@@ -435,9 +460,9 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None):
     ids = results.boxes.id
     for i, box in enumerate(results.boxes):
         cls_id = int(box.cls[0])
-        if cls_id not in ADAS_CLASSES:
+        if cls_id not in class_map:
             continue
-        name, _ = ADAS_CLASSES[cls_id]
+        name, _ = class_map[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
@@ -577,7 +602,8 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                     (enh_rgb, frame_counts, frame_ids, frame_risk,
                      job['last_det_list']) = track_and_draw(
                         yolo, enh_rgb, conf=frame_conf, imgsz=p['det_imgsz'],
-                        depth_map=depth_map)
+                        depth_map=depth_map,
+                        class_map=p.get('class_map'))
                     job['all_track_ids'] |= frame_ids
                     job['any_high_risk'] = job['any_high_risk'] or frame_risk
                     for k, v in frame_counts.items():
@@ -632,15 +658,45 @@ st.sidebar.markdown(
 
 st.sidebar.markdown("<div class='sb-section'>⚙️ Detection Settings</div>",
                      unsafe_allow_html=True)
+
+# The low-light-specialized detector (see src/train_lowlight.py) is
+# optional — only offered once its weights actually exist, same
+# graceful-degradation pattern as the pothole detector. It uses a
+# different weights *path*, not a stock name, so map display label ->
+# actual load_detector() argument rather than assuming the label
+# itself is loadable.
+_lowlight_weights = os.path.join(
+    os.path.dirname(__file__), 'yolov8_lowlight.pt')
+_has_lowlight_weights = os.path.exists(_lowlight_weights)
+_LOWLIGHT_LABEL = 'yolov8_lowlight.pt (fine-tuned, ExDark)'
+_det_model_options = {
+    'yolov8n.pt': 'yolov8n.pt',
+    'yolov8s.pt': 'yolov8s.pt',
+    'yolov8m.pt': 'yolov8m.pt',
+}
+if _has_lowlight_weights:
+    _det_model_options[_LOWLIGHT_LABEL] = _lowlight_weights
+
 det_model_choice = st.sidebar.selectbox(
-    'Detector Model', ['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'],
+    'Detector Model', list(_det_model_options.keys()),
     index=1,
-    help='Larger models are more accurate but slower. '
-         'yolov8s is the default balance of speed/accuracy.')
+    help='Larger COCO models are more accurate but slower; yolov8s '
+         'is the default balance of speed/accuracy. The fine-tuned '
+         'low-light option (if trained) covers only Person/Bicycle/'
+         'Car/Motorcycle/Bus — no Traffic Light/Stop Sign/Truck — '
+         'but is trained on real night images instead of only '
+         'daylight COCO photos.')
+is_lowlight_model = det_model_choice == _LOWLIGHT_LABEL
+det_class_map = LOWLIGHT_CLASSES if is_lowlight_model else ADAS_CLASSES
+if is_lowlight_model:
+    st.sidebar.caption(
+        '⚠️ Low-light model active — detects Person/Bicycle/Car/'
+        'Motorcycle/Bus only. Switch back to a stock model for '
+        'Traffic Light/Stop Sign/Truck.')
 
 with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
-    yolo, has_yolo = load_detector(det_model_choice)
+    yolo, has_yolo = load_detector(_det_model_options[det_model_choice])
     pothole_yolo, has_pothole = load_pothole_detector()
     midas_model, midas_transform, has_depth = load_depth_model()
 
@@ -698,6 +754,11 @@ else:
     st.sidebar.info(
         "MiDaS depth model unavailable — using box-geometry risk "
         "heuristic instead")
+if _has_lowlight_weights:
+    st.sidebar.success("Low-light detector available (select above)")
+else:
+    st.sidebar.info(
+        "Low-light detector not trained — see src/train_lowlight.py")
 
 with st.sidebar.expander("ℹ️ About This Project"):
     st.markdown("""
@@ -719,6 +780,8 @@ with st.sidebar.expander("ℹ️ About This Project"):
 - Classical lane detection (Canny + Hough)
 - Proximity risk estimation (LOW/MEDIUM/HIGH) from an actual MiDaS
   monocular depth pass, not just box size
+- Optional low-light-specialized detector, fine-tuned on real night
+  images (ExDark) instead of only daylight COCO photos
 - Optional fine-tuned pothole detector
 
 **App:**
@@ -822,7 +885,7 @@ with tab1:
                 with st.spinner("Running YOLOv8..."):
                     det_img, det_list, counts, high_risk = detect_and_draw(
                         yolo, enh_arr, conf=eff_conf, imgsz=det_imgsz,
-                        depth_map=img_depth_map)
+                        depth_map=img_depth_map, class_map=det_class_map)
 
             lane_found = False
             if use_lanes and HAS_CV2:
@@ -1073,6 +1136,7 @@ streamlit run app/streamlit_app.py
                         'det_conf': det_conf, 'det_imgsz': det_imgsz,
                         'adaptive_mode': adaptive_mode,
                         'use_depth_risk': use_depth_risk,
+                        'class_map': det_class_map,
                     },
                 }
                 st.rerun()
@@ -1285,7 +1349,7 @@ with tab_live:
                     # the box-geometry risk fallback (depth_map=None).
                     enh_rgb, _, _, _ = detect_and_draw(
                         yolo, enh_rgb, conf=live_conf,
-                        imgsz=min(det_imgsz, 320))
+                        imgsz=min(det_imgsz, 320), class_map=det_class_map)
 
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 orig_labeled = img_bgr.copy()
@@ -1370,7 +1434,7 @@ with tab_live:
                         midas_model, midas_transform, DEVICE, live_arr)
                 live_arr, live_dets, _, live_high_risk = detect_and_draw(
                     yolo, live_arr, conf=live_eff_conf, imgsz=det_imgsz,
-                    depth_map=live_depth_map)
+                    depth_map=live_depth_map, class_map=det_class_map)
             else:
                 live_dets = []
 
@@ -1493,6 +1557,16 @@ Enhanced Output + Lanes + Detections + Risk
   distant truck; box size alone can't tell them apart). Falls back
   to the geometry heuristic automatically if the depth model isn't
   available (e.g. no internet on first run)
+- Optional low-light-specialized detector: a separate YOLOv8 model
+  fine-tuned on ExDark (Exclusively Dark Image Dataset — Loh & Chan,
+  CVIU 2019), trained on real night-time appearance rather than
+  daylight COCO photos alone. Covers 5 classes with genuine ExDark
+  training data (Person/Bicycle/Car/Motorcycle/Bus) — kept as a
+  separate model rather than replacing the main detector because
+  fine-tuning directly on ExDark's 12 classes would silently drop
+  Truck/Traffic Light/Stop Sign detection entirely, not just leave
+  it unchanged. Selectable from the sidebar's Detector Model dropdown
+  once trained via `src/train_lowlight.py`
 - Optional dedicated pothole detector (separate fine-tuned YOLOv8
   single-class model — trainable via `src/train_pothole.py`)
 

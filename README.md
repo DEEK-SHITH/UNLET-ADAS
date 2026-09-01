@@ -81,6 +81,17 @@ now:
   below). The app detects the trained weights automatically once
   present and enables the toggle; without them, it stays off and says
   why.
+- **Optional low-light-specialized detector.** The main detector runs
+  stock COCO weights — trained entirely on daylight photos — on
+  enhanced frames. `src/train_lowlight.py` fine-tunes a separate
+  YOLOv8 model on ExDark (Exclusively Dark Image Dataset, Loh & Chan
+  CVIU 2019) covering the 5 ADAS classes ExDark actually has night
+  data for (Person/Bicycle/Car/Motorcycle/Bus); Traffic Light/Stop
+  Sign/Truck still use the stock model, since fine-tuning directly on
+  ExDark's 12 classes would silently drop those 3 rather than leave
+  them unchanged. Once trained, it's selectable from the sidebar's
+  Detector Model dropdown alongside the stock n/s/m options — see
+  [Train the Low-Light Detector](#train-the-low-light-detector) below.
 - **Real-time live camera stream.** The Live Camera tab has a "Live
   Stream" mode (via WebRTC, `streamlit-webrtc`) that continuously
   enhances your camera feed and shows original + enhanced **side by
@@ -160,6 +171,31 @@ Prefer a free GPU over local CPU training? Open
 in Google Colab — same download + training steps, just paste your API
 key into the config cell and run top to bottom (~15–25 min on a T4).
 
+### Train the Low-Light Detector
+Optional — the app runs fine without it, using the stock COCO
+detector on every tab. Fine-tunes a separate 5-class YOLOv8 model
+(Person/Bicycle/Car/Motorcycle/Bus) on ExDark, a dataset of real
+night-time images, rather than only ever seeing daylight COCO photos.
+```bash
+pip install roboflow
+python src/train_lowlight.py --roboflow_key YOUR_FREE_API_KEY \
+    --roboflow_workspace WORKSPACE --roboflow_project PROJECT \
+    --roboflow_version N
+# then: cp checkpoints/lowlight_best.pt app/yolov8_lowlight.pt
+```
+Unlike the pothole dataset, there's no single verified ExDark mirror
+to default to — search [Roboflow Universe](https://universe.roboflow.com)
+for "ExDark", pick a project with an image count close to the real
+dataset's ~7,363, then click **Download Dataset → YOLOv8 → Show
+download code** to read off `WORKSPACE`/`PROJECT`/`N`. The script
+prints a per-class box count after downloading so a partial/incomplete
+mirror is obvious immediately rather than silently undertraining.
+
+Prefer a free GPU over local CPU training? Open
+[`notebooks/UNLET_ADAS_Lowlight_YOLO_Colab.ipynb`](notebooks/UNLET_ADAS_Lowlight_YOLO_Colab.ipynb)
+in Google Colab — same steps, just fill in the config cell and run
+top to bottom (~20–35 min on a T4).
+
 ### Enhance a Video
 ```python
 from src.model import build_model
@@ -208,7 +244,8 @@ UNLET-ADAS/
 │ └── zerodce_cbam_best.pt # Trained weights
 ├── notebooks/
 │ ├── UNLET_ADAS_Colab.ipynb # Main model training (Colab)
-│ └── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
+│ ├── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
+│ └── UNLET_ADAS_Lowlight_YOLO_Colab.ipynb # Low-light detector training (Colab)
 ├── results/
 │ ├── metric_comparison.png # PSNR/SSIM charts
 │ ├── training_curves.png # Loss curves
