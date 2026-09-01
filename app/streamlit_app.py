@@ -1011,7 +1011,14 @@ streamlit run app/streamlit_app.py
                              type='primary'):
                     job['cancel_requested'] = True
 
-                more = process_video_chunk(
+                # Skip straight to stopping on the same rerun the click
+                # happened in — calling process_video_chunk here would
+                # still grind through one more full chunk (frames read,
+                # enhanced, detected, written) before the cancellation
+                # took effect, since the chunk's own cancel check only
+                # runs *after* it finishes. That made Cancel feel broken
+                # or slow, worse the larger chunk_size got.
+                more = False if job['cancel_requested'] else process_video_chunk(
                     job, model, DEVICE, yolo, has_yolo,
                     pothole_yolo, has_pothole)
 

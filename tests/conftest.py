@@ -119,10 +119,9 @@ def dark_test_image(tmp_path_factory):
     return str(path)
 
 
-@pytest.fixture(scope='session')
-def short_test_video(tmp_path_factory):
-    """A ~1s clip trimmed from the repo's own sample night-drive footage
-    (results/original_night_drive.mp4), so the video pipeline is tested
+def _trim_sample_video(out_path, seconds):
+    """Trim the repo's own sample night-drive footage
+    (results/original_night_drive.mp4) to ~seconds long, so tests run
     against real footage without a slow full-length run in CI."""
     src = os.path.join(REPO_ROOT, 'results', 'original_night_drive.mp4')
     cap = cv2.VideoCapture(src)
@@ -130,11 +129,10 @@ def short_test_video(tmp_path_factory):
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    out_path = tmp_path_factory.mktemp('data') / 'short_test.mp4'
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
-    max_frames = int(fps)  # ~1 second
+    max_frames = int(fps * seconds)
     count = 0
     while count < max_frames:
         ret, frame = cap.read()
@@ -147,7 +145,24 @@ def short_test_video(tmp_path_factory):
 
     if count == 0:
         pytest.fail(f'Could not read any frames from {src}')
+    return count
 
+
+@pytest.fixture(scope='session')
+def short_test_video(tmp_path_factory):
+    """A ~1s clip — enough to exercise the video pipeline end to end
+    without a slow full-length run in CI."""
+    out_path = tmp_path_factory.mktemp('data') / 'short_test.mp4'
+    _trim_sample_video(out_path, seconds=1)
+    return str(out_path)
+
+
+@pytest.fixture(scope='session')
+def medium_test_video(tmp_path_factory):
+    """A ~8s clip — long enough to span several processing chunks, so
+    a mid-run Cancel click actually has something to interrupt."""
+    out_path = tmp_path_factory.mktemp('data') / 'medium_test.mp4'
+    _trim_sample_video(out_path, seconds=8)
     return str(out_path)
 
 

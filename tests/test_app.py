@@ -6,6 +6,8 @@ three main tabs (Image, Video, Live Camera) loads and, where it doesn't
 need real camera hardware, actually processes input end to end — not
 just that the page renders.
 """
+import time
+
 from conftest import assert_no_app_error
 
 
@@ -44,6 +46,41 @@ def test_video_tab_processes(page, short_test_video):
     page.get_by_text('Processed', exact=False).wait_for(timeout=180000)
     page.get_by_role('button', name='Download Enhanced').wait_for(timeout=15000)
     page.get_by_role('button', name='Download Comparison').wait_for(timeout=15000)
+
+    assert_no_app_error(page)
+
+
+def test_video_cancel_stops_promptly(page, medium_test_video):
+    # Regression test for a real bug: Cancel used to set the cancel
+    # flag but then still run one more full processing chunk before
+    # honoring it, so clicking Cancel didn't visibly do anything for
+    # a long stretch. It must now stop within one chunk, quickly.
+    page.get_by_role('tab', name='Video Enhancement').click()
+
+    file_input = page.locator('input[type="file"][accept*=".mp4"]')
+    file_input.wait_for(state='attached', timeout=15000)
+    file_input.set_input_files(medium_test_video)
+
+    enhance_btn = page.get_by_role('button', name='Enhance Video')
+    enhance_btn.wait_for(timeout=15000)
+    enhance_btn.click()
+
+    cancel_btn = page.get_by_role('button', name='Cancel Enhancement')
+    cancel_btn.wait_for(timeout=20000)
+    page.wait_for_timeout(3000)  # let a bit of real progress happen
+
+    t0 = time.time()
+    cancel_btn.click()
+    page.get_by_text('Cancelled', exact=False).first.wait_for(timeout=20000)
+    elapsed = time.time() - t0
+
+    assert elapsed < 20, (
+        f'Cancel took {elapsed:.1f}s to take effect — should stop '
+        'within roughly one processing chunk, not grind through the '
+        'whole remaining video first.')
+
+    body_text = page.locator('body').inner_text()
+    assert 'kept the' in body_text and 'frames processed before' in body_text
 
     assert_no_app_error(page)
 
