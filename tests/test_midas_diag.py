@@ -1,20 +1,18 @@
 """
-Temporary diagnostic — NOT a real test. src/depth.py's load_midas()
-deliberately swallows every exception so the app degrades gracefully,
-which also means CI's "[model status] MiDaS depth model unavailable"
-line doesn't say *why*. This calls torch.hub directly, unwrapped, to
-print the actual traceback into the CI log. Delete once the real
-cause is known.
+Temporary diagnostic — NOT a real test. Confirms the fix in
+src/depth.py's load_midas() (pre-trusting the nested
+rwightman/gen-efficientnet-pytorch repo that MiDaS_small's backbone
+loads internally) actually resolves the EOFError seen in CI before
+this fix. Delete once confirmed working.
 """
-import traceback
+import torch
 
 
 def test_midas_load_diagnostic():
-    import torch
-    try:
-        model = torch.hub.load(
-            'intel-isl/MiDaS', 'MiDaS_small', trust_repo=True)
-        print('[midas diag] load_state_dict SUCCESS:', type(model))
-    except Exception:
-        print('[midas diag] FAILED:')
-        traceback.print_exc()
+    from src.depth import load_midas
+
+    device = torch.device('cpu')
+    model, transform, ok = load_midas(device)
+    print(f'[midas diag] load_midas() -> ok={ok}, '
+          f'model={type(model).__name__ if model else None}')
+    assert ok, 'load_midas() returned ok=False even after the trust-list fix'
