@@ -8,6 +8,13 @@ Or in Colab:
     !python src/train.py --data_root /content/lol_dataset \
                          --save_dir  /content/drive/MyDrive/UNLET_Project/checkpoints \
                          --epochs 100
+
+Optionally, mix in extra *unpaired* low-light images alongside LOL's
+485 paired ones (see src/prepare_extra_lowlight.py for building this
+directory from real driving footage and/or ExDark) -- LOL alone is
+mostly indoor/urban, so this broadens the model past that:
+    python src/train.py --extra_low_dirs /content/extra_lowlight/night_drive_frames \
+                                          /content/extra_lowlight/exdark
 """
 
 import os
@@ -42,23 +49,63 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Dataset
 # ─────────────────────────────────────────────
-class LOLDataset(Dataset):
-    """LOL (Low-Light) dataset loader with augmentation."""
+def _glob_images(directory):
+    return sorted(
+        glob(os.path.join(directory, '*.png')) +
+        glob(os.path.join(directory, '*.jpg')) +
+        glob(os.path.join(directory, '*.jpeg')))
 
-    def __init__(self, low_dir, high_dir=None, size=256):
+
+class LOLDataset(Dataset):
+    """
+    LOL (Low-Light) dataset loader with augmentation. Supports mixing
+    in additional *unpaired* low-light-only images via extra_low_dirs
+    (e.g. hilly/rural driving frames, ExDark photos) alongside LOL's
+    485 paired low/high images -- LOL alone is mostly indoor/urban,
+    which is exactly the generalization gap the project's own paper
+    names as future work.
+
+    Unpaired images get no matching 'high' ground truth, so
+    __getitem__ returns a zero tensor for them; UNLETLoss already
+    treats an all-zero target as "no ground truth" and falls back to
+    its unsupervised losses only for that sample (color constancy /
+    exposure / spatial consistency / smoothness) -- no change needed
+    there for this to work correctly.
+    """
+
+    def __init__(self, low_dir, high_dir=None, size=256,
+                 extra_low_dirs=None):
         self.size = size
-        self.lows = sorted(
-            glob(os.path.join(low_dir, '*.png')) +
-            glob(os.path.join(low_dir, '*.jpg')))
+        self.lows = _glob_images(low_dir)
         self.hmap = {}
         if high_dir and os.path.exists(high_dir):
-            highs = sorted(
-                glob(os.path.join(high_dir, '*.png')) +
-                glob(os.path.join(high_dir, '*.jpg')))
+            highs = _glob_images(high_dir)
             self.hmap = {
                 os.path.basename(p): p for p in highs}
-        print(f'  {len(self.lows)} images '
+        print(f'  {len(self.lows)} paired images '
               f'from {os.path.basename(low_dir)}')
+
+        extra_count = 0
+        for extra_dir in (extra_low_dirs or []):
+            if not extra_dir or not os.path.isdir(extra_dir):
+                print(f'  WARNING: extra_low_dir not found, '
+                      f'skipping: {extra_dir}')
+                continue
+            extra_imgs = _glob_images(extra_dir)
+            # Any filename that happens to collide with an LOL 'high'
+            # name would wrongly pair unrelated images -- exclude it
+            # from this unpaired set rather than risk a bad pairing.
+            extra_imgs = [p for p in extra_imgs
+                          if os.path.basename(p) not in self.hmap]
+            self.lows.extend(extra_imgs)
+            extra_count += len(extra_imgs)
+            print(f'  {len(extra_imgs)} unpaired images '
+                  f'from {os.path.basename(extra_dir.rstrip("/"))} '
+                  '(unsupervised losses only)')
+        if extra_count:
+            print(f'  Total: {len(self.lows)} images '
+                  f'({len(self.lows) - extra_count} paired + '
+                  f'{extra_count} unpaired)')
 
     def _to_tensor(self, path):
         img = Image.open(path).convert('RGB').resize(
@@ -124,7 +171,11 @@ def train(args):
     print('\nLoading datasets...')
     train_ds = LOLDataset(
         os.path.join(args.data_root, 'our485', 'low'),
-        os.path.join(args.data_root, 'our485', 'high'))
+        os.path.join(args.data_root, 'our485', 'high'),
+        extra_low_dirs=args.extra_low_dirs)
+    # Validation stays on LOL's own eval15 only -- mixing in unpaired
+    # images here would make PSNR/SSIM incomparable across runs (they
+    # can only be computed where a real ground truth exists).
     val_ds   = LOLDataset(
         os.path.join(args.data_root, 'eval15', 'low'),
         os.path.join(args.data_root, 'eval15', 'high'))
@@ -242,6 +293,14 @@ def parse_args():
         description='Train UNLET-ADAS enhancement model')
     p.add_argument('--data_root',
                    default='./data/lol_dataset')
+    p.add_argument('--extra_low_dirs', nargs='+', default=None,
+                   help='Optional extra directories of unpaired '
+                        'low-light-only images (no ground truth) to '
+                        'train on alongside LOL\'s 485 paired images '
+                        '-- e.g. real driving footage frames or '
+                        'ExDark photos, to generalize beyond LOL\'s '
+                        'mostly indoor/urban scenes. See '
+                        'src/prepare_extra_lowlight.py.')
     p.add_argument('--save_dir',
                    default='./checkpoints')
     p.add_argument('--epochs',
