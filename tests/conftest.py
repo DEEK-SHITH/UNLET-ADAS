@@ -19,6 +19,15 @@ from playwright.sync_api import sync_playwright
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_URL = 'http://localhost:8501'
 
+# So `from src... import ...` (e.g. tests/test_depth.py) resolves
+# regardless of how pytest was invoked. `python -m pytest` prepends
+# the cwd to sys.path automatically, but the plain `pytest` console
+# script (what CI actually runs) does not — conftest.py is always
+# loaded first either way, so this is the one place that reliably
+# fixes it for every test file.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 
 @pytest.fixture(scope='session')
 def streamlit_server():
