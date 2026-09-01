@@ -12,3 +12,4 @@ tqdm>=4.65.0
 ultralytics>=8.0.0
 lap>=0.5.12
 streamlit-webrtc>=0.47.0
+gdown>=5.1.0

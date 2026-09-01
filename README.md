@@ -177,19 +177,30 @@ detector on every tab. Fine-tunes a separate 5-class YOLOv8 model
 (Person/Bicycle/Car/Motorcycle/Bus) on ExDark, a dataset of real
 night-time images, rather than only ever seeing daylight COCO photos.
 ```bash
-pip install roboflow
-python src/train_lowlight.py --roboflow_key YOUR_FREE_API_KEY \
-    --roboflow_workspace WORKSPACE --roboflow_project PROJECT \
-    --roboflow_version N
+pip install gdown ultralytics
+python src/train_lowlight.py
 # then: cp checkpoints/lowlight_best.pt app/yolov8_lowlight.pt
 ```
-Unlike the pothole dataset, there's no single verified ExDark mirror
-to default to — search [Roboflow Universe](https://universe.roboflow.com)
-for "ExDark", pick a project with an image count close to the real
-dataset's ~7,363, then click **Download Dataset → YOLOv8 → Show
-download code** to read off `WORKSPACE`/`PROJECT`/`N`. The script
-prints a per-class box count after downloading so a partial/incomplete
-mirror is obvious immediately rather than silently undertraining.
+By default this downloads ExDark directly from the dataset authors'
+own [Google Drive links](https://github.com/cs-chan/Exclusively-Dark-Image-Dataset)
+and converts their official bounding-box annotation format straight
+to YOLO — no account or API key needed. Non-commercial research use
+only, per the dataset's license. If that download is ever blocked or
+rate-limited on your network, fall back to a hand-found
+[Roboflow Universe](https://universe.roboflow.com) mirror instead:
+```bash
+pip install roboflow
+python src/train_lowlight.py --source roboflow \
+    --roboflow_key YOUR_FREE_API_KEY \
+    --roboflow_workspace WORKSPACE --roboflow_project PROJECT \
+    --roboflow_version N
+```
+Search Roboflow Universe for "ExDark", pick a project with an image
+count close to the real dataset's ~7,363, then click **Download
+Dataset → YOLOv8 → Show download code** to read off
+`WORKSPACE`/`PROJECT`/`N`. Either way, the script prints a per-class
+box count after downloading so a partial/incomplete source is obvious
+immediately rather than silently undertraining.
 
 Prefer a free GPU over local CPU training? Open
 [`notebooks/UNLET_ADAS_Lowlight_YOLO_Colab.ipynb`](notebooks/UNLET_ADAS_Lowlight_YOLO_Colab.ipynb)
