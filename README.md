@@ -151,6 +151,26 @@ python src/train.py \
   --batch_size 8
 ```
 
+**Optional: expand beyond LOL's 485 pairs.** LOL alone is mostly
+indoor/urban — the paper's own conclusion names this as a
+generalization gap for hilly/rural driving scenes. `src/train.py`
+accepts `--extra_low_dirs`, extra *unpaired* low-light image
+directories (no ground truth needed — the loss already runs
+unsupervised-only for any sample without a match) to fold in
+alongside LOL:
+```bash
+python src/prepare_extra_lowlight.py --out_dir ./data/extra_lowlight
+# add --include_exdark to also pull the ~7,363-image ExDark set
+python src/train.py --data_root ./data/lol_dataset \
+  --extra_low_dirs ./data/extra_lowlight/night_drive_frames \
+                    ./data/extra_lowlight/exdark
+```
+`prepare_extra_lowlight.py` sparsely samples frames from this repo's
+own `results/original_night_drive.mp4` (zero extra download) and, if
+`--include_exdark` is passed, reuses the low-light detector's ExDark
+downloader (see [Train the Low-Light Detector](#train-the-low-light-detector))
+for a much larger and more diverse real-world source.
+
 ### Train the Pothole Detector
 Optional — the app runs fine without it, just with the pothole
 toggle disabled. COCO/YOLOv8 has no pothole class, so this fine-tunes

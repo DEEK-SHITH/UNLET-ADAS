@@ -153,13 +153,22 @@ class UNLETLoss(nn.Module):
             200.0 * smoothness_loss(curves)
         )
 
-        # Supervised losses (only when ground truth available)
-        if target is not None and target.sum() > 0:
-            loss = loss + (
-                1.0 * F.l1_loss(enhanced, target) +
-                0.1 * self.perceptual(enhanced, target) +
-                2.0 * self.ssim(enhanced, target) +
-                0.1 * frequency_loss(enhanced, target)
-            )
+        # Supervised losses (only for samples with ground truth). A
+        # batch can mix paired and unpaired (all-zero target) rows --
+        # e.g. LOL images alongside extra unpaired low-light data
+        # (src/train.py --extra_low_dirs) -- so this must be a
+        # per-sample mask, not a whole-batch target.sum() check: that
+        # would apply the supervised loss to unpaired rows too,
+        # pushing them toward an all-black image.
+        if target is not None:
+            has_gt = target.reshape(target.size(0), -1).sum(dim=1) > 0
+            if has_gt.any():
+                e, t = enhanced[has_gt], target[has_gt]
+                loss = loss + (
+                    1.0 * F.l1_loss(e, t) +
+                    0.1 * self.perceptual(e, t) +
+                    2.0 * self.ssim(e, t) +
+                    0.1 * frequency_loss(e, t)
+                )
 
         return loss
