@@ -285,6 +285,16 @@ GPU instance removes that ceiling. The app already auto-detects CUDA
 every YOLO detector, so this is pure deployment plumbing — no model
 code changes needed.
 
+**Just need GPU speed for an occasional demo, not an always-on
+deployment?** Hugging Face Spaces GPU tiers are billed hourly with no
+automatic shut-off — genuinely easy to forget running and rack up a
+bill. [`notebooks/UNLET_ADAS_Demo_Colab.ipynb`](notebooks/UNLET_ADAS_Demo_Colab.ipynb)
+is the free alternative: open it in Colab right before you need to
+show the app, it launches the real app on Colab's free GPU and prints
+a temporary public link (via a free Cloudflare Quick Tunnel, no
+account needed) that lasts as long as the tab stays open. Zero cost,
+zero billing risk, perfect for a presentation/viva/demo recording.
+
 One-time setup:
 1. Create a new Space at [huggingface.co/new-space](https://huggingface.co/new-space)
    → **SDK: Docker** → pick a GPU hardware tier (e.g. "T4 small";
@@ -320,7 +330,8 @@ UNLET-ADAS/
 ├── notebooks/
 │ ├── UNLET_ADAS_Colab.ipynb # Main model training (Colab)
 │ ├── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
-│ └── UNLET_ADAS_Lowlight_YOLO_Colab.ipynb # Low-light detector training (Colab)
+│ ├── UNLET_ADAS_Lowlight_YOLO_Colab.ipynb # Low-light detector training (Colab)
+│ └── UNLET_ADAS_Demo_Colab.ipynb # Free on-demand GPU demo (Colab)
 ├── results/
 │ ├── metric_comparison.png # PSNR/SSIM charts
 │ ├── training_curves.png # Loss curves
