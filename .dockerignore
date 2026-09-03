@@ -1,0 +1,19 @@
+# Keep the HF Spaces build context small and fast -- none of these
+# are needed to run the deployed app (yolov8s.pt and app/*.pt weights
+# ARE needed, so they're deliberately not excluded here).
+.git
+.github
+.claude
+.pytest_cache
+.streamlit/secrets.toml
+test-artifacts
+results
+notebooks
+data
+checkpoints
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+*.egg-info
