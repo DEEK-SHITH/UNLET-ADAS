@@ -10,7 +10,9 @@ import cv2
 import numpy as np
 import pytest
 
+import src.prepare_extra_lowlight as prepare_extra_lowlight
 from src.prepare_extra_lowlight import (
+    build_extra_lowlight_set,
     extract_video_frames,
     flatten_exdark_images,
 )
@@ -87,3 +89,23 @@ def test_flatten_exdark_images_handles_missing_class_folders(tmp_path):
     copied = flatten_exdark_images(images_root, out_dir)
     assert copied == 1
     assert os.listdir(out_dir) == ['Car_car_0.jpg']
+
+
+def test_exdark_failure_does_not_lose_video_frames(tiny_video, tmp_path, monkeypatch):
+    """Regression test: a real incident where Google Drive rate-
+    limited the ExDark download ("Too many users have viewed or
+    downloaded this file recently") and the whole cell crashed,
+    discarding the night-drive frames that had already been extracted
+    successfully just before it. ExDark is optional -- its failure
+    must not take down sources that already succeeded."""
+    def _boom(dest_dir):
+        raise RuntimeError('Failed to retrieve file url: rate limited')
+    monkeypatch.setattr(prepare_extra_lowlight, 'build_exdark_extra', _boom)
+
+    out_dir = str(tmp_path / 'extra_lowlight')
+    dirs = build_extra_lowlight_set(
+        out_dir, video_paths=[tiny_video], every_n=5, include_exdark=True)
+
+    assert len(dirs) == 1
+    assert os.path.basename(dirs[0]) == 'night_drive_frames'
+    assert len(os.listdir(dirs[0])) > 0
