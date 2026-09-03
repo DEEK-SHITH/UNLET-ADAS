@@ -154,7 +154,19 @@ def build_extra_lowlight_set(dest_dir, video_paths=None, every_n=30,
             built_dirs.append(frames_dir)
 
     if include_exdark:
-        built_dirs.append(build_exdark_extra(dest_dir))
+        try:
+            built_dirs.append(build_exdark_extra(dest_dir))
+        except Exception as e:
+            # ExDark is an optional add-on -- don't throw away frames
+            # already extracted above (e.g. from real driving
+            # footage) just because this one extra source failed.
+            # Google Drive rate-limits this specific public file
+            # under heavy worldwide traffic ("Too many users have
+            # viewed or downloaded this file recently"), independent
+            # of anything on our end; it can take up to 24h to clear.
+            print(f'\nWARNING: ExDark download failed, continuing '
+                  f'WITHOUT it (the other extra sources above are '
+                  f'still used): {e}')
 
     return built_dirs
 
