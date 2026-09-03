@@ -15,6 +15,14 @@ directory from real driving footage and/or ExDark) -- LOL alone is
 mostly indoor/urban, so this broadens the model past that:
     python src/train.py --extra_low_dirs /content/extra_lowlight/night_drive_frames \
                                           /content/extra_lowlight/exdark
+
+If training gets interrupted (Colab disconnect, GPU quota runout,
+laptop closed), resume it with --resume instead of starting over --
+this picks up from the last completed epoch using the same --save_dir
+(reads resume_state.pt, saved after every epoch):
+    python src/train.py --data_root /content/lol_dataset \
+                         --save_dir  /content/drive/MyDrive/UNLET_Project/checkpoints \
+                         --epochs 100 --resume
 """
 
 import os
@@ -195,10 +203,34 @@ def train(args):
     scheduler = CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6)
 
-    best_val  = float('inf')
-    patience  = 0
-    history   = {'train': [], 'val': [], 'psnr': [], 'ssim': []}
-    weights   = os.path.join(args.save_dir, 'zerodce_cbam_best.pt')
+    best_val    = float('inf')
+    patience    = 0
+    history     = {'train': [], 'val': [], 'psnr': [], 'ssim': []}
+    start_epoch = 0
+    weights     = os.path.join(args.save_dir, 'zerodce_cbam_best.pt')
+    resume_path = os.path.join(args.save_dir, 'resume_state.pt')
+
+    if args.resume:
+        if os.path.exists(resume_path):
+            ckpt = torch.load(resume_path, map_location=DEVICE)
+            model.load_state_dict(ckpt['model'])
+            optimizer.load_state_dict(ckpt['optimizer'])
+            scheduler.load_state_dict(ckpt['scheduler'])
+            best_val    = ckpt['best_val']
+            patience    = ckpt['patience']
+            history     = ckpt['history']
+            start_epoch = ckpt['epoch'] + 1
+            if ckpt.get('total_epochs') != args.epochs:
+                print(f'WARNING: this checkpoint was started with '
+                      f'--epochs {ckpt.get("total_epochs")}, but this '
+                      f'run passed --epochs {args.epochs} -- pass the '
+                      'same value used originally for a clean cosine '
+                      'LR schedule.')
+            print(f'\nResuming from epoch {start_epoch + 1} '
+                  f'(best val so far: {best_val:.4f})')
+        else:
+            print(f'\n--resume passed but no checkpoint found at '
+                  f'{resume_path} -- starting fresh from epoch 1.')
 
     print(f'\nTraining: {args.epochs} epochs | '
           f'batch={args.batch_size} | lr={args.lr}')
@@ -207,7 +239,7 @@ def train(args):
 
     t0 = time.time()
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         # Train
         model.train()
         tl = []
@@ -265,6 +297,21 @@ def train(args):
               f'loss={tl_m:.3f} | val={vl_m:.3f} | '
               f'lr={lr:.1e} | {elapsed:.1f}m{marker}')
 
+        # Saved every epoch (not just on a new best) so an
+        # interruption -- Colab disconnect, GPU quota runout, a
+        # closed laptop -- never loses more than one epoch's worth of
+        # progress; --resume picks back up from here.
+        torch.save({
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'epoch': epoch,
+            'best_val': best_val,
+            'patience': patience,
+            'history': history,
+            'total_epochs': args.epochs,
+        }, resume_path)
+
         if patience >= args.patience:
             print(f'Early stopping at epoch {epoch+1}')
             break
@@ -303,6 +350,13 @@ def parse_args():
                         'src/prepare_extra_lowlight.py.')
     p.add_argument('--save_dir',
                    default='./checkpoints')
+    p.add_argument('--resume', action='store_true',
+                   help='Resume from resume_state.pt in --save_dir '
+                        '(saved after every epoch) instead of '
+                        'starting over -- use this after a Colab '
+                        'disconnect, GPU quota runout, or any other '
+                        'mid-training interruption. No-ops (starts '
+                        'fresh) if no checkpoint is found.')
     p.add_argument('--epochs',
                    type=int, default=100)
     p.add_argument('--batch_size',

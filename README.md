@@ -151,6 +151,20 @@ python src/train.py \
   --batch_size 8
 ```
 
+**If training gets interrupted** (Colab disconnect, GPU quota
+runout, a closed laptop), don't start over — resume from the last
+completed epoch with `--resume`. It reads `resume_state.pt` (saved to
+`--save_dir` after every single epoch: model, optimizer, scheduler,
+best score, and history), not just the final checkpoint, so at most
+one epoch's progress is ever lost:
+```bash
+python src/train.py --data_root ./data/lol_dataset \
+  --save_dir ./checkpoints --epochs 100 --resume
+```
+Pass the exact same `--epochs`/`--save_dir` you used originally — the
+Colab notebook has the equivalent as a `RESUME = True` toggle in
+Cell 2 (on by default; a no-op if nothing's been saved yet).
+
 **Optional: expand beyond LOL's 485 pairs.** LOL alone is mostly
 indoor/urban — the paper's own conclusion names this as a
 generalization gap for hilly/rural driving scenes. `src/train.py`
