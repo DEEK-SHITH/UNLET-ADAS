@@ -1,0 +1,42 @@
+name: Deploy to Hugging Face Space
+
+# Runs after the Tests workflow succeeds on main, so a broken build
+# never reaches the GPU Space -- see the Dockerfile's header comment
+# and README.md's "Deploy to Hugging Face Spaces (GPU)" section for
+# one-time setup (creating the Space, HF_TOKEN secret, HF_SPACE_REPO
+# variable). Until those are set, this step skips itself rather than
+# failing, so the feature can sit dormant with no red X until you're
+# ready to use it.
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE_REPO" ]; then
+            echo "HF_TOKEN and/or HF_SPACE_REPO are not configured -- skipping deploy."
+            echo "See README.md's 'Deploy to Hugging Face Spaces (GPU)' section to set them up."
+            exit 0
+          fi
+          # The HF Space's own git history is a one-way deployment
+          # mirror, not a collaborative branch -- force-pushing the
+          # current main here is the standard, expected way to sync
+          # to it (unlike this repo's own main, which is never
+          # force-pushed).
+          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
+          git push --force space HEAD:main

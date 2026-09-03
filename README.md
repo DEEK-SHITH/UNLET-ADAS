@@ -276,6 +276,36 @@ pytest tests/ -v
 
 ---
 
+## ⚡ Deploy to Hugging Face Spaces (GPU)
+Optional — the app runs fine on Streamlit Community Cloud's free
+CPU-only tier, which is what's live by default. But CPU is what caps
+the Live Camera tab's frame rate, especially in "Sharp" mode; a small
+GPU instance removes that ceiling. The app already auto-detects CUDA
+(`torch.cuda.is_available()`) for the enhancer, MiDaS depth model, and
+every YOLO detector, so this is pure deployment plumbing — no model
+code changes needed.
+
+One-time setup:
+1. Create a new Space at [huggingface.co/new-space](https://huggingface.co/new-space)
+   → **SDK: Docker** → pick a GPU hardware tier (e.g. "T4 small";
+   billed hourly while the Space is running — check current pricing
+   at [huggingface.co/pricing](https://huggingface.co/pricing)).
+2. Generate an access token with write access at
+   [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+3. In this GitHub repo: **Settings → Secrets and variables → Actions**
+   — add secret `HF_TOKEN` (the token from step 2) and variable
+   `HF_SPACE_REPO` (`<your-hf-username>/<space-name>` from step 1).
+4. Push to `main`. [`.github/workflows/deploy-hf-space.yml`](.github/workflows/deploy-hf-space.yml)
+   runs after tests pass and pushes this repo to the Space, which
+   rebuilds [`Dockerfile`](Dockerfile) on HF's GPU runtime — no manual
+   deploy step after that.
+
+Until `HF_TOKEN`/`HF_SPACE_REPO` are set, the deploy workflow just
+skips itself (no red X) — this can sit dormant until you're ready to
+pay for GPU hosting.
+
+---
+
 ## 📁 Project Structure
 
 UNLET-ADAS/
