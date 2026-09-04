@@ -1381,6 +1381,16 @@ with tab_live:
                     "video": {
                         "width": {"ideal": _live_res[0]},
                         "height": {"ideal": _live_res[1]},
+                        # Capping the capture frame rate directly caps
+                        # the WebRTC bitrate demand. On a lossy network
+                        # path (e.g. the free Colab-hosted demo, where
+                        # the media stream travels over the open
+                        # internet rather than a stable data-center
+                        # link) a lower, steadier bitrate means fewer
+                        # dropped packets — the visible symptom of
+                        # dropped packets is blocky/smeared video, not
+                        # a crash, so there's nothing to except() here.
+                        "frameRate": {"ideal": 15, "max": 20},
                     },
                     "audio": False,
                 },
@@ -1390,7 +1400,13 @@ with tab_live:
             st.caption(
                 "Click START above, then allow camera access. If it "
                 "stays black, your network may be blocking the WebRTC "
-                "connection — Snapshot mode is the fallback.")
+                "connection — Snapshot mode is the fallback. Blocky/"
+                "smeared video (rather than a black screen) means the "
+                "network path is dropping packets — most common on "
+                "the free Colab-hosted demo, where video travels over "
+                "the open internet instead of a stable server link. "
+                "Switch to Snapshot mode for a reliable single-frame "
+                "capture, or try a better connection.")
         live_shot = None
     else:
         st.markdown(
