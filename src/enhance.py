@@ -69,7 +69,14 @@ def scene_aware_conf(base_conf, luminance, dark_thresh=0.35,
     between the two (dusk, shaded hillside roads).
     """
     weight = scene_blend_weight(luminance, dark_thresh, bright_thresh)
-    return min(base_conf + night_boost * weight, 0.95)
+    # luminance is normally a numpy float32 (mean of a uint8/float32
+    # frame array), which makes `weight` -- and so the result here --
+    # inherit that dtype through the arithmetic. Cast to a native
+    # Python float: newer ultralytics versions strictly validate
+    # conf= as int/float and reject numpy scalar subtypes, and every
+    # caller of this function feeds its result straight into a YOLO
+    # conf= argument.
+    return float(min(base_conf + night_boost * weight, 0.95))
 
 
 def correct_color_cast(frame_uint8, strength=0.6, lum_pctl=60, max_shift=18):
