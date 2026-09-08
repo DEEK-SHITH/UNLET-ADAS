@@ -286,6 +286,28 @@ def load_pothole_detector():
 
 
 @st.cache_resource
+def load_sign_detector():
+    """
+    Loads a dedicated road-sign detector (crosswalk / speedlimit /
+    stop / trafficlight), if one has been trained (see
+    src/train_signs.py — COCO/YOLOv8 has no generic road-sign class,
+    so this is a separate fine-tuned model, same pattern as the
+    pothole detector above). Returns (None, False) if the weights
+    file isn't present, so the app degrades gracefully instead of
+    crashing on a fresh checkout.
+    """
+    weights = os.path.join(
+        os.path.dirname(__file__), 'signs_best.pt')
+    if not os.path.exists(weights):
+        return None, False
+    try:
+        from ultralytics import YOLO
+        return YOLO(weights), True
+    except Exception:
+        return None, False
+
+
+@st.cache_resource
 def load_depth_model():
     """
     Loads MiDaS small for depth-based proximity risk (see
@@ -500,6 +522,7 @@ def redraw_cached_detections(image_np, det_list):
 
 def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                         pothole_yolo, has_pothole,
+                        sign_yolo=None, has_signs=False,
                         midas_model=None, midas_transform=None,
                         has_depth=False, chunk_size=24):
     """
@@ -590,6 +613,33 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                         enh_rgb, f'Pothole {pconf:.0%}',
                         (x1, max(y1 - 8, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+
+            if p.get('vid_signs') and has_signs:
+                if run_heavy or not job['last_sign_boxes']:
+                    sign_res = sign_yolo(
+                        enh_rgb, conf=frame_conf,
+                        imgsz=p['det_imgsz'], verbose=False)[0]
+                    job['last_sign_boxes'] = [
+                        (*map(int, box.xyxy[0]), float(box.conf[0]),
+                         sign_res.names[int(box.cls[0])])
+                        for box in sign_res.boxes]
+                # Colors here are RGB-ordered tuples, not BGR: this loop
+                # (like the pothole one above it) draws straight onto
+                # enh_rgb with no BGR round-trip, unlike
+                # src.signs.draw_sign_detections (used in the Image
+                # tab), which does convert -- so its BGR-ordered
+                # SIGN_CLASS_COLORS would come out wrong-channel here.
+                sign_colors_rgb = {
+                    'stop': (220, 0, 0), 'speedlimit': (0, 130, 220),
+                    'crosswalk': (220, 200, 0), 'trafficlight': (0, 200, 0),
+                }
+                for x1, y1, x2, y2, sconf, cls_name in job['last_sign_boxes']:
+                    color = sign_colors_rgb.get(cls_name, (200, 200, 200))
+                    cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(
+                        enh_rgb, f'{cls_name} {sconf:.0%}',
+                        (x1, max(y1 - 8, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
             if p['vid_detect'] and has_yolo:
                 depth_map = None
@@ -698,6 +748,7 @@ with st.spinner('Loading models...'):
     model, DEVICE, status = load_enhancer()
     yolo, has_yolo = load_detector(_det_model_options[det_model_choice])
     pothole_yolo, has_pothole = load_pothole_detector()
+    sign_yolo, has_signs = load_sign_detector()
     midas_model, midas_transform, has_depth = load_depth_model()
 
 adaptive_mode = st.sidebar.checkbox(
@@ -748,6 +799,11 @@ if has_pothole:
 else:
     st.sidebar.info(
         "Pothole detector not trained — see src/train_pothole.py")
+if has_signs:
+    st.sidebar.success("Road sign detector ready")
+else:
+    st.sidebar.info(
+        "Sign detector not trained — see src/train_signs.py")
 if has_depth:
     st.sidebar.success("MiDaS depth model ready")
 else:
@@ -782,7 +838,7 @@ with st.sidebar.expander("ℹ️ About This Project"):
   monocular depth pass, not just box size
 - Optional low-light-specialized detector, fine-tuned on real night
   images (ExDark) instead of only daylight COCO photos
-- Optional fine-tuned pothole detector
+- Optional fine-tuned pothole and road-sign detectors
 
 **App:**
 - Image, Video, and real-time Live Camera (WebRTC) tabs
@@ -813,7 +869,7 @@ with tab1:
         "Upload a dark/night image. "
         "UNLET enhances it then YOLOv8 detects objects.")
 
-    col_chk1, col_chk2, col_chk3 = st.columns(3)
+    col_chk1, col_chk2, col_chk3, col_chk4 = st.columns(4)
     with col_chk1:
         use_detection = st.checkbox(
             "Enable YOLOv8 Detection after enhancement",
@@ -835,6 +891,19 @@ with tab1:
                  "Dedicated single-class YOLOv8 model fine-tuned on "
                  "a public pothole dataset (COCO/YOLOv8 has no "
                  "pothole class, so this runs as a separate pass).")
+    with col_chk4:
+        use_signs = st.checkbox(
+            "Enable Sign Detection", value=True,
+            disabled=not has_signs,
+            help="Needs a trained sign model — run "
+                 "src/train_signs.py and drop the resulting "
+                 "signs_best.pt into app/ to enable this."
+                 if not has_signs else
+                 "Dedicated multi-class YOLOv8 model (crosswalk / "
+                 "speedlimit / stop / trafficlight signs) fine-tuned "
+                 "on a public road-sign dataset — COCO/YOLOv8 has no "
+                 "generic road-sign class, so this runs as a "
+                 "separate pass, same as the pothole detector.")
 
     uploaded = st.file_uploader(
         "Choose an image",
@@ -913,13 +982,23 @@ with tab1:
                         pothole_count += 1
                     det_img = cv2.cvtColor(pot_bgr, cv2.COLOR_BGR2RGB)
 
+            sign_count = 0
+            if use_signs and has_signs and HAS_CV2:
+                with st.spinner("Running sign detector..."):
+                    from src.signs import draw_sign_detections
+                    sign_res = sign_yolo(
+                        det_img, conf=eff_conf, imgsz=det_imgsz,
+                        verbose=False)[0]
+                    det_img, sign_count = draw_sign_detections(
+                        det_img, sign_res, sign_res.names)
+
             with col2:
                 st.subheader("✨ UNLET Enhanced")
                 st.image(enh, use_container_width=True)
                 st.caption(f"Avg brightness: {enh_b:.3f}")
 
             with col3:
-                if (use_detection and det_list) or lane_found or pothole_count:
+                if (use_detection and det_list) or lane_found or pothole_count or sign_count:
                     label_bits = []
                     if use_detection and det_list:
                         label_bits.append(f"{len(det_list)} objects")
@@ -927,6 +1006,8 @@ with tab1:
                         label_bits.append("lanes")
                     if pothole_count:
                         label_bits.append(f"{pothole_count} potholes")
+                    if sign_count:
+                        label_bits.append(f"{sign_count} signs")
                     st.subheader(f"🎯 Detection ({', '.join(label_bits)})")
                     st.image(det_img, use_container_width=True)
                 else:
@@ -1089,6 +1170,12 @@ streamlit run app/streamlit_app.py
                 key='vid_pothole',
                 help=None if has_pothole else
                 "Needs a trained pothole model — see src/train_pothole.py")
+            vid_signs = st.checkbox(
+                "Run sign detection on enhanced frames",
+                value=True, disabled=not has_signs,
+                key='vid_signs',
+                help=None if has_signs else
+                "Needs a trained sign model — see src/train_signs.py")
             vid_fast = st.checkbox(
                 "⚡ Faster processing (detect objects every 4th frame)",
                 value=True, key='vid_fast',
@@ -1127,11 +1214,13 @@ streamlit run app/streamlit_app.py
                     'tot_v': tot_v, 'max_sec': max_sec, 'total_dur': total_dur,
                     'count': 0, 'proc_idx': 0,
                     'last_det_list': [], 'last_pot_boxes': [],
+                    'last_sign_boxes': [],
                     'all_track_ids': set(), 'all_counts': {},
                     'any_high_risk': False,
                     'cancel_requested': False, 'ended_early': False,
                     'params': {
                         'vid_lanes': vid_lanes, 'vid_pothole': vid_pothole,
+                        'vid_signs': vid_signs,
                         'vid_detect': vid_detect, 'vid_fast': vid_fast,
                         'det_conf': det_conf, 'det_imgsz': det_imgsz,
                         'adaptive_mode': adaptive_mode,
@@ -1168,6 +1257,7 @@ streamlit run app/streamlit_app.py
                 more = False if job['cancel_requested'] else process_video_chunk(
                     job, model, DEVICE, yolo, has_yolo,
                     pothole_yolo, has_pothole,
+                    sign_yolo, has_signs,
                     midas_model, midas_transform, has_depth)
 
                 if more:
@@ -1484,6 +1574,14 @@ with tab_live:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
                     live_pothole_count += 1
                 live_arr = cv2.cvtColor(pot_bgr, cv2.COLOR_BGR2RGB)
+
+            live_sign_count = 0
+            if has_signs and HAS_CV2:
+                from src.signs import draw_sign_detections
+                sign_res = sign_yolo(
+                    live_arr, conf=live_eff_conf, imgsz=det_imgsz, verbose=False)[0]
+                live_arr, live_sign_count = draw_sign_detections(
+                    live_arr, sign_res, sign_res.names)
             ms_live = (time.time() - t0) * 1000
 
         col_l1, col_l2 = st.columns(2)
@@ -1499,6 +1597,8 @@ with tab_live:
                       "part of the frame in the vehicle's path.")
         if live_pothole_count:
             st.warning(f"🕳️ {live_pothole_count} pothole(s) detected.")
+        if live_sign_count:
+            st.warning(f"🚧 {live_sign_count} road sign(s) detected.")
         if live_dets:
             cols = st.columns(min(len(live_dets), 4))
             for i, d in enumerate(live_dets):
@@ -1596,6 +1696,9 @@ Enhanced Output + Lanes + Detections + Risk
   once trained via `src/train_lowlight.py`
 - Optional dedicated pothole detector (separate fine-tuned YOLOv8
   single-class model — trainable via `src/train_pothole.py`)
+- Optional dedicated road-sign detector (separate fine-tuned YOLOv8
+  model covering crosswalk/speedlimit/stop/trafficlight signs — COCO
+  has no such classes — trainable via `src/train_signs.py`)
 
 **Application**
 - **Image tab** — upload, enhance, detect, side-by-side compare

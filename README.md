@@ -81,6 +81,13 @@ now:
   below). The app detects the trained weights automatically once
   present and enables the toggle; without them, it stays off and says
   why.
+- **Optional dedicated road-sign detector.** Same situation as
+  potholes — COCO has no generic warning/regulatory-sign classes
+  (crosswalk, speed limit, stop, traffic light signs), so this is
+  another separate YOLOv8 model, fine-tuned with `src/train_signs.py`
+  (see [Train the Road Sign Detector](#train-the-road-sign-detector)
+  below). Same auto-detect-the-weights, degrade-gracefully-without-them
+  behavior as the pothole detector.
 - **Optional low-light-specialized detector.** The main detector runs
   stock COCO weights — trained entirely on daylight photos — on
   enhanced frames. `src/train_lowlight.py` fine-tunes a separate
@@ -202,6 +209,29 @@ Get a free API key at [app.roboflow.com](https://app.roboflow.com)
 
 Prefer a free GPU over local CPU training? Open
 [`notebooks/UNLET_ADAS_Pothole_Colab.ipynb`](notebooks/UNLET_ADAS_Pothole_Colab.ipynb)
+in Google Colab — same download + training steps, just paste your API
+key into the config cell and run top to bottom (~15–25 min on a T4).
+
+### Train the Road Sign Detector
+Optional — the app runs fine without it, just with the sign-detection
+toggle disabled. COCO/YOLOv8 has no generic road-sign classes, so
+this fine-tunes a small, dedicated multi-class YOLOv8 model
+(crosswalk / speedlimit / stop / trafficlight) rather than retraining
+the main ADAS detector — the same approach as the pothole detector
+above.
+```bash
+pip install roboflow
+python src/train_signs.py --roboflow_key YOUR_FREE_API_KEY
+# then: cp checkpoints/signs_best.pt app/signs_best.pt
+```
+Get a free API key at [app.roboflow.com](https://app.roboflow.com)
+(Settings → API Keys). Dataset:
+[Road Sign Detection](https://universe.roboflow.com/roboflow-100/road-signs-6ih4y)
+(877 images, 4 classes — one of Roboflow's own curated Roboflow-100
+benchmark datasets).
+
+Prefer a free GPU over local CPU training? Open
+[`notebooks/UNLET_ADAS_Signs_Colab.ipynb`](notebooks/UNLET_ADAS_Signs_Colab.ipynb)
 in Google Colab — same download + training steps, just paste your API
 key into the config cell and run top to bottom (~15–25 min on a T4).
 
@@ -330,6 +360,7 @@ UNLET-ADAS/
 ├── notebooks/
 │ ├── UNLET_ADAS_Colab.ipynb # Main model training (Colab)
 │ ├── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
+│ ├── UNLET_ADAS_Signs_Colab.ipynb # Road sign detector training (Colab)
 │ ├── UNLET_ADAS_Lowlight_YOLO_Colab.ipynb # Low-light detector training (Colab)
 │ └── UNLET_ADAS_Demo_Colab.ipynb # Free on-demand GPU demo (Colab)
 ├── results/
