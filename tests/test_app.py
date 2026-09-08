@@ -114,6 +114,7 @@ def test_about_tab_loads(page):
     body_text = page.locator('body').inner_text()
     for label in ('YOLOv8 not available', 'detection ready',
                   'Pothole detector not trained', 'Pothole detector ready',
+                  'Sign detector not trained', 'Road sign detector ready',
                   'MiDaS depth model ready', 'MiDaS depth model unavailable'):
         if label in body_text:
             print(f'[model status] {label}')
