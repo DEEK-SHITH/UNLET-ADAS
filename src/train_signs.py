@@ -57,6 +57,14 @@ def download_dataset(api_key, dest_dir, retries=3):
     import time
     from roboflow import Roboflow
 
+    # Start from a clean directory every attempt. A previous failed run
+    # (e.g. this exact download failing partway through) can leave
+    # dest_dir existing but empty/partial; Roboflow's SDK doesn't
+    # always treat a pre-existing target directory as "start over" the
+    # same way it does a fresh one, which produced exactly this bug
+    # report: no error raised, but no data.yaml anywhere in the result.
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)
     os.makedirs(dest_dir, exist_ok=True)
     rf = Roboflow(api_key=api_key)
     project = rf.workspace('roboflow-100').project('road-signs-6ih4y')
@@ -126,9 +134,22 @@ def train(args):
         dataset_dir = download_dataset(args.roboflow_key, args.dataset_dir)
         data_yaml = os.path.join(dataset_dir, 'data.yaml')
 
+    # Read the real class list back from the dataset itself rather than
+    # hardcoding an assumed one here -- Roboflow Universe listings can
+    # differ from what a dataset's name/description implies, and this
+    # way the log always reflects what's actually about to be trained,
+    # whatever that turns out to be.
+    real_classes = '(unknown -- see data.yaml)'
+    try:
+        import yaml
+        with open(data_yaml) as f:
+            real_classes = ', '.join(yaml.safe_load(f).get('names', []))
+    except Exception:
+        pass
+
     print(f'\nFine-tuning YOLOv8{args.model_size} for road-sign detection')
     print(f'Data     : {data_yaml}')
-    print(f'Classes  : crosswalk, speedlimit, stop, trafficlight')
+    print(f'Classes  : {real_classes}')
     print(f'Epochs   : {args.epochs}')
     print(f'Image sz : {args.image_size}')
     print('-' * 50)

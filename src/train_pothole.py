@@ -56,6 +56,15 @@ def download_dataset(api_key, dest_dir, retries=3):
     import time
     from roboflow import Roboflow
 
+    # Start from a clean directory every attempt. A previous failed run
+    # can leave dest_dir existing but empty/partial; Roboflow's SDK
+    # doesn't always treat a pre-existing target directory as "start
+    # over" the same way it does a fresh one, which can silently
+    # produce a download with no data.yaml anywhere in it (see the
+    # identical fix in src/train_signs.py's download_dataset, where a
+    # real user hit exactly this on a retry).
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)
     os.makedirs(dest_dir, exist_ok=True)
     rf = Roboflow(api_key=api_key)
     project = rf.workspace('brad-dwyer').project('pothole-voxrl')
