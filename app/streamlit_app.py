@@ -1176,6 +1176,17 @@ streamlit run app/streamlit_app.py
                     job['cap'].release()
                     job['enh_w'].release()
                     job['cmp_w'].release()
+                    # OpenCV's VideoWriter uses the 'mp4v' codec (MPEG-4
+                    # Part 2), which browsers don't play inline via
+                    # <video> -- st.video() below would otherwise show a
+                    # blank/unplayable player, leaving the download
+                    # button as the only way to actually watch the
+                    # result. Re-encode to H.264 in place so it plays
+                    # directly in the app; falls back to the original
+                    # file (still downloadable) if that fails.
+                    from src.enhance import transcode_for_browser
+                    transcode_for_browser(job['enh_p'])
+                    transcode_for_browser(job['cmp_p'])
                     job['status'] = 'done'
                     st.rerun()
             else:

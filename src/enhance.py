@@ -16,6 +16,9 @@ the system helps at night and in hilly terrain without washing out
 or over-brightening daytime footage.
 """
 
+import os
+import subprocess
+
 import cv2
 import numpy as np
 import torch
@@ -168,6 +171,50 @@ def enhance_frame_batch(model, device, frames_rgb,
            * 255).clip(0, 255).astype(np.uint8)
 
     return [correct_color_cast(frame) for frame in out]
+
+
+def transcode_for_browser(path, crf=23, preset='veryfast', timeout=300):
+    """
+    Re-encode an OpenCV-written video (VideoWriter's 'mp4v' fourcc is
+    MPEG-4 Part 2, not H.264) to H.264/yuv420p in place, via the
+    self-contained ffmpeg binary imageio-ffmpeg ships on pip install --
+    no system/apt ffmpeg required, so this works identically on
+    Streamlit Cloud, the Colab demo, and locally.
+
+    Browsers' HTML5 <video> element does not play MPEG-4 Part 2, so
+    st.video() on an untouched mp4v file renders a blank/unplayable
+    player -- the only way to watch it is the download button, which
+    is the "why can't I just watch it" report this fixes. -movflags
+    +faststart also moves the moov atom to the front of the file so
+    playback can start before it's fully downloaded.
+
+    Transcodes into a temp file and atomically replaces `path`, so
+    every existing caller (st.video(path), the download button reading
+    path) keeps working unchanged. Falls back to leaving the original
+    mp4v file in place if ffmpeg is missing or the transcode fails --
+    still downloadable and playable in a desktop player, just not
+    inline in the browser -- so a transcode failure never breaks video
+    processing itself.
+    """
+    path = str(path)  # accept pathlib.Path as well as str
+    tmp_out = path + '.h264.mp4'
+    try:
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run(
+            [ffmpeg_exe, '-y', '-i', path,
+             '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+             '-preset', preset, '-crf', str(crf),
+             '-movflags', '+faststart', tmp_out],
+            check=True, capture_output=True, timeout=timeout)
+        os.replace(tmp_out, path)
+        return True
+    except Exception as e:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+        print(f'Browser transcode skipped ({e}); '
+              f'serving the original file (download-only playback).')
+        return False
 
 
 def enhance_video(model, device,
