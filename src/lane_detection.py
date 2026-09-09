@@ -14,6 +14,56 @@ import cv2
 import numpy as np
 
 
+def estimate_dashboard_cutoff(frames_rgb, min_static_frac=0.12,
+                               max_static_frac=0.6, var_thresh=6.0):
+    """
+    Auto-detect a static dashboard/steering-wheel region at the bottom
+    of the frame from a short sequence of consecutive frames, so
+    detect_lanes' region of interest can exclude it automatically --
+    no manual "which fraction of my frame is dashboard" tuning needed.
+
+    The dashboard, steering wheel, and hood are physically fixed
+    relative to a dashboard/steering-wheel-mounted camera, so their
+    pixels stay near-identical frame to frame. The road ahead moves
+    (perspective shift from vehicle motion, changing lighting, passing
+    objects), so its pixels vary across frames even on a straight,
+    empty road at night. Scanning per-row pixel variance across time,
+    from the bottom of the frame upward, finds where that static
+    region gives way to the moving road.
+
+    frames_rgb: list of >=3 consecutive RGB frames, same shape.
+    Returns a roi_bottom fraction (0..1) for detect_lanes -- 1.0 (no
+    exclusion) if fewer than 3 frames are given, if no confident
+    static run is found at the bottom (e.g. a windshield-mounted
+    camera, where the whole frame is road and should vary throughout),
+    or if the static run implausibly covers most of the frame (e.g. a
+    stationary/parked vehicle, where trusting it would exclude nearly
+    everything) -- always the safe fallback, never a guess that could
+    make lane detection worse than leaving it off.
+    """
+    if len(frames_rgb) < 3:
+        return 1.0
+    stack = np.stack([f.astype(np.float32) for f in frames_rgb], axis=0)
+    # Per-pixel variance across time, averaged across width/channels
+    # into one variance value per row -- a single top-to-bottom profile.
+    row_var = stack.var(axis=0).mean(axis=(1, 2))
+    h = row_var.shape[0]
+
+    # Scan from the bottom row upward for the first contiguous run of
+    # low-variance (static) rows -- that run is the dashboard/wheel.
+    cutoff_row = h
+    for y in range(h - 1, -1, -1):
+        if row_var[y] < var_thresh:
+            cutoff_row = y
+        else:
+            break
+
+    exclude_frac = (h - cutoff_row) / h
+    if exclude_frac < min_static_frac or exclude_frac > max_static_frac:
+        return 1.0
+    return cutoff_row / h
+
+
 def _region_of_interest(edges, roi_top=0.55, roi_bottom=1.0):
     """
     Mask everything outside a trapezoid covering the road ahead.
