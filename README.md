@@ -139,27 +139,30 @@ now:
 
 ## 🏗️ System Architecture
 
-Night Video Input
+Night Video / Image / Live Camera Input
 ↓
-┌─────────────────────────┐
-│ Zero-DCE++ CBAM │
-│ Enhancement Model │
-│ • Channel Attention │
-│ • Spatial Attention │
-│ • 8-iter curves │
-└─────────────────────────┘
+┌───────────────────────────────────┐
+│ Zero-DCE++ CBAM Enhancement Model │
+│ • Channel + spatial attention │
+│ • 8-iteration curve estimation │
+│ • Full-resolution curve apply │
+│ • Adaptive day/night blending │
+│ • LAB color-cast correction │
+└───────────────────────────────────┘
 ↓
-Enhanced Video Output
+Enhanced Frame
 ↓
-┌─────────────────────────┐
-│ ADAS Vision Pipeline │
-│ • YOLOv8l Detection │
-│ • DeepSORT Tracking │
-│ • Lane Detection │
-│ • Depth Estimation │
-└─────────────────────────┘
+┌───────────────────────────────────┐
+│ ADAS Perception Pipeline │
+│ • YOLOv8 (n/s/m) + ByteTrack │
+│ • Classical Canny/Hough lanes │
+│ • MiDaS depth → proximity risk │
+│ • Optional: pothole/sign/ │
+│ low-light detectors │
+└───────────────────────────────────┘
 ↓
-Professional HUD Overlay
+Annotated Output (boxes, IDs, risk labels, lane overlay)
+via the Streamlit web app
 
 
 ---
