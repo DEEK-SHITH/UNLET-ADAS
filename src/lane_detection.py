@@ -14,26 +14,45 @@ import cv2
 import numpy as np
 
 
-def _region_of_interest(edges):
-    """Mask everything outside a trapezoid covering the road ahead."""
+def _region_of_interest(edges, roi_top=0.55, roi_bottom=1.0):
+    """
+    Mask everything outside a trapezoid covering the road ahead.
+
+    roi_top/roi_bottom are fractions of frame height (0=top, 1=bottom)
+    for the trapezoid's near and far edges. The defaults (0.55..1.0)
+    assume a windshield-mounted camera where the road fills the entire
+    bottom of the frame. A dashboard/steering-wheel-mounted camera
+    instead has the dashboard occupying the lower portion of the
+    frame — Canny will find plenty of high-contrast edges there (gauge
+    rings, the wheel's silhouette) that get mistaken for lane
+    boundaries. Raising roi_bottom below 1.0 excludes that region;
+    see detect_lanes' roi_bottom parameter.
+    """
     h, w = edges.shape
     mask = np.zeros_like(edges)
+    y_top, y_bottom = int(h * roi_top), int(h * roi_bottom)
     polygon = np.array([[
-        (0,            h),
-        (w,            h),
-        (int(w * 0.58), int(h * 0.55)),
-        (int(w * 0.42), int(h * 0.55)),
+        (0,            y_bottom),
+        (w,            y_bottom),
+        (int(w * 0.58), y_top),
+        (int(w * 0.42), y_top),
     ]], dtype=np.int32)
     cv2.fillPoly(mask, polygon, 255)
     return cv2.bitwise_and(edges, mask)
 
 
-def _average_slope_line(lines, h, y_top_frac=0.55):
+def _average_slope_line(lines, h, y_top_frac=0.55, y_bottom_frac=1.0):
     """
     Collapse a cluster of nearby Hough segments (all left-lane or
     all right-lane) into one representative line, extrapolated from
-    the bottom of the frame up to y_top_frac * height — but never
+    y_bottom_frac * height up to y_top_frac * height — but never
     further up than the topmost segment actually detected.
+
+    y_bottom_frac matches detect_lanes' roi_bottom: with the default
+    1.0 the line is drawn all the way to the frame's bottom edge; a
+    lower value (e.g. for a dashboard-mounted camera whose lower frame
+    isn't road) stops the line at the region that actually has edge
+    evidence instead of stubbing it out into the excluded area.
 
     Extrapolating a fixed distance regardless of the evidence is
     what causes the classic "lines crossing high in the sky" defect:
@@ -61,7 +80,7 @@ def _average_slope_line(lines, h, y_top_frac=0.55):
     # (common on faint night-time markings) shouldn't swing the
     # extrapolated line's vanishing point.
     slope, intercept = np.median(slopes), np.median(intercepts)
-    y1 = h
+    y1 = int(h * y_bottom_frac)
     y2 = max(int(h * y_top_frac), min_y)
     x1 = int((y1 - intercept) / slope)
     x2 = int((y2 - intercept) / slope)
@@ -69,10 +88,20 @@ def _average_slope_line(lines, h, y_top_frac=0.55):
 
 
 def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
-                  hough_threshold=25, min_line_len=30, max_line_gap=80):
+                  hough_threshold=25, min_line_len=30, max_line_gap=80,
+                  roi_top=0.55, roi_bottom=1.0):
     """
     Detect left/right lane boundary lines on an (already enhanced)
     RGB frame.
+
+    roi_top/roi_bottom (fractions of frame height, 0=top, 1=bottom)
+    control the trapezoidal region of interest — see
+    _region_of_interest's docstring. The defaults assume a
+    windshield-mounted camera where the road fills the entire bottom
+    of the frame; lower roi_bottom below 1.0 for a
+    dashboard/steering-wheel-mounted camera whose lower frame is
+    dashboard, not road (that region's high-contrast gauge/wheel edges
+    otherwise get mistaken for lane boundaries).
 
     Returns (left_line, right_line), each either None or an
     (x1, y1, x2, y2) tuple in pixel coordinates.
@@ -81,7 +110,7 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, canny_lo, canny_hi)
-    roi_edges = _region_of_interest(edges)
+    roi_edges = _region_of_interest(edges, roi_top=roi_top, roi_bottom=roi_bottom)
 
     segments = cv2.HoughLinesP(
         roi_edges, rho=2, theta=np.pi / 180,
@@ -99,7 +128,8 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
                 continue
             (left if slope < 0 else right).append((x1, y1, x2, y2))
 
-    left_line, right_line = _average_slope_line(left, h), _average_slope_line(right, h)
+    left_line = _average_slope_line(left, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
+    right_line = _average_slope_line(right, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
 
     # A left/right pair should never cross: the left boundary must stay
     # left of the right boundary at both the near (bottom) and far (top)

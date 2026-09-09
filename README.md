@@ -97,7 +97,12 @@ now:
   — no additional training data needed, consistent with the project's
   lightweight, real-time design. Works best on straight/gently-curved
   roads with visible markings; a linear line fit can't perfectly hug
-  a tight curve.
+  a tight curve. The region of interest assumes a windshield-mounted
+  camera by default (road fills the whole lower frame) — a sidebar
+  slider ("road region bottom edge") lets you exclude a
+  dashboard/steering-wheel region for lower-mounted cameras, where
+  the dashboard's own high-contrast edges would otherwise get
+  mistaken for lane boundaries.
 - **Optional dedicated pothole detector.** COCO/YOLOv8 has no pothole
   class, so this isn't a flag on the existing detector — it's a
   separate, single-class YOLOv8 model you fine-tune yourself with
