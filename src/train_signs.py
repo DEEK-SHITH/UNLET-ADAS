@@ -9,11 +9,18 @@ situation as the pothole detector (src/train_pothole.py) — this can't
 be added by just flipping a flag on the existing detector; it needs its
 own model trained on a labeled road-sign dataset.
 
-Dataset: the classic andrewmvd "Road Sign Detection" dataset (877
-images, 4 classes: crosswalk, speedlimit, stop, trafficlight —
-originally published on Kaggle in 2020), mirrored as one of Roboflow's
-own curated Roboflow-100 benchmark datasets (not a random community
-upload). https://universe.roboflow.com/roboflow-100/road-signs-6ih4y
+Dataset: Roboflow-100's "road-signs-6ih4y" project — one of Roboflow's
+own curated RF100 benchmark datasets (not a random community upload),
+in its "Real World" domain group. https://universe.roboflow.com/roboflow-100/road-signs-6ih4y
+
+This is a real-world, multi-class road-sign taxonomy (several dozen
+specific sign types — pedestrian crossings, turn/U-turn restrictions,
+traffic-light colors, no-stopping/no-parking, railway crossings, lane
+and junction signage, etc. — with Indonesian-language class names),
+not a small fixed set. train() below reads the actual class list back
+from the downloaded data.yaml rather than assuming one, and the app's
+sign-drawing code (src/signs.py) assigns colors by hashing the class
+name for the same reason — see those files for details.
 
 Usage:
     pip install roboflow ultralytics
@@ -49,10 +56,9 @@ sys.path.insert(0, ROOT)
 
 def download_dataset(api_key, dest_dir, retries=3):
     """
-    Download the Roboflow-100 road-signs dataset in YOLOv8 format —
-    the same 877-image andrewmvd Road Sign Detection dataset listed on
-    Kaggle, mirrored on Universe under Roboflow's own "roboflow-100"
-    benchmark-collection account.
+    Download the Roboflow-100 road-signs dataset in YOLOv8 format,
+    from Roboflow's own "roboflow-100" benchmark-collection account.
+    See the module docstring above for what this dataset actually is.
     """
     import time
     from roboflow import Roboflow

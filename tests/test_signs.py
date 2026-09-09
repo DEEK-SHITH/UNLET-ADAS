@@ -9,7 +9,7 @@ so this is new coverage, not a regression test.
 import numpy as np
 import pytest
 
-from src.signs import draw_sign_detections, SIGN_CLASS_COLORS
+from src.signs import draw_sign_detections, _color_for_class, _PALETTE
 
 
 class _FakeBox:
@@ -66,13 +66,24 @@ def test_draw_sign_detections_zero_boxes_leaves_frame_unchanged():
     assert np.array_equal(out, frame)
 
 
-def test_all_known_sign_classes_have_a_distinct_color():
-    # crosswalk, speedlimit, stop, trafficlight -- the andrewmvd
-    # Road Sign Detection dataset's 4 classes (see src/train_signs.py).
-    expected = {'stop', 'speedlimit', 'crosswalk', 'trafficlight'}
-    assert expected <= set(SIGN_CLASS_COLORS.keys())
-    colors = list(SIGN_CLASS_COLORS.values())
-    assert len(colors) == len(set(colors)), 'sign classes must not share a color'
+def test_color_for_class_is_deterministic():
+    # The real dataset's class list (Roboflow-100's road-signs-6ih4y)
+    # turned out to be several dozen specific sign types rather than a
+    # small fixed set of English names (see src/train_signs.py), so
+    # colors are hashed from the class name instead of looked up in a
+    # hardcoded dict. Same name must always map to the same color.
+    assert _color_for_class('stop') == _color_for_class('stop')
+    assert _color_for_class('stop') in _PALETTE
+
+
+def test_color_for_class_varies_across_different_names():
+    # Not a strict no-collision guarantee (the palette is finite and
+    # names are hashed), just a sanity check that a handful of
+    # different names don't all collapse onto the same color.
+    names = ['stop', 'speedlimit', 'crosswalk', 'trafficlight',
+             'larangan-berhenti', 'peringatan-simpang-tiga']
+    colors = {_color_for_class(n) for n in names}
+    assert len(colors) > 1
 
 
 def test_unknown_class_falls_back_to_default_color_without_crashing():

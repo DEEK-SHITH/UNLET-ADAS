@@ -11,8 +11,24 @@ import sys
 import os
 import io
 import time
+import hashlib
 import tempfile
 from PIL import Image, ImageOps
+
+# RGB-ordered mirror of src.signs._PALETTE, duplicated (rather than
+# imported) because the "from src..." imports elsewhere in this file
+# are all deliberately lazy: src/ only lands on sys.path once
+# load_enhancer() runs its sys.path.insert, which hasn't happened yet
+# at module import time. RGB vs. BGR order matters here because this
+# palette feeds the video tab's per-frame loop, which draws straight
+# onto an RGB buffer with no BGR round-trip (see the call site below),
+# unlike src.signs.draw_sign_detections (used by the Image/Live tabs),
+# which does convert and so uses the BGR-ordered original.
+_SIGN_PALETTE_RGB = [
+    (220, 0, 0), (0, 130, 220), (200, 200, 0), (255, 165, 0),
+    (180, 0, 180), (0, 180, 0), (0, 200, 200), (255, 0, 128),
+    (180, 100, 0), (0, 0, 255), (100, 255, 100), (130, 0, 0),
+]
 
 try:
     import cv2
@@ -627,14 +643,17 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                 # (like the pothole one above it) draws straight onto
                 # enh_rgb with no BGR round-trip, unlike
                 # src.signs.draw_sign_detections (used in the Image
-                # tab), which does convert -- so its BGR-ordered
-                # SIGN_CLASS_COLORS would come out wrong-channel here.
-                sign_colors_rgb = {
-                    'stop': (220, 0, 0), 'speedlimit': (0, 130, 220),
-                    'crosswalk': (220, 200, 0), 'trafficlight': (0, 200, 0),
-                }
+                # tab), which does convert. The sign dataset's real
+                # class list turned out to be several dozen specific
+                # sign types rather than a handful of English names
+                # (see src/train_signs.py), so colors are hashed from
+                # the class name (mirroring src.signs._color_for_class)
+                # instead of a hardcoded per-name dict.
                 for x1, y1, x2, y2, sconf, cls_name in job['last_sign_boxes']:
-                    color = sign_colors_rgb.get(cls_name, (200, 200, 200))
+                    digest = hashlib.md5(
+                        str(cls_name).encode('utf-8')).digest()
+                    color = _SIGN_PALETTE_RGB[
+                        digest[0] % len(_SIGN_PALETTE_RGB)]
                     cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(
                         enh_rgb, f'{cls_name} {sconf:.0%}',
