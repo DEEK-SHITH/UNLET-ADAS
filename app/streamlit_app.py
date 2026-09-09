@@ -639,7 +639,8 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
             frame_conf = scene_aware_conf(p['det_conf'], orig_lum)
 
             if p['vid_lanes']:
-                left_line, right_line = detect_lanes(enh_rgb)
+                left_line, right_line = detect_lanes(
+                    enh_rgb, roi_bottom=p.get('lane_roi_bottom', 1.0))
                 if left_line is not None or right_line is not None:
                     enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
 
@@ -830,6 +831,17 @@ use_depth_risk = st.sidebar.checkbox(
          'MiDaS depth model unavailable (needs internet access on '
          'first run) — falling back to the box-geometry risk '
          'heuristic.')
+lane_roi_bottom_pct = st.sidebar.slider(
+    'Lane detection: road region bottom edge', 50, 100, 100, 5,
+    help='Percent of the frame height, from the top, where the road '
+         "region ends. Leave at 100% for a windshield-mounted camera "
+         "(road fills the whole bottom of the frame). If lane lines "
+         "look like they're tracing your dashboard or steering wheel "
+         "instead of the road — common with a low, dashboard-mounted "
+         "camera — lower this to exclude that region; its high-"
+         "contrast gauge/wheel edges otherwise get mistaken for lane "
+         "boundaries.")
+lane_roi_bottom = lane_roi_bottom_pct / 100.0
 
 st.sidebar.markdown("<div class='sb-section'>🖥️ System Status</div>",
                      unsafe_allow_html=True)
@@ -1007,7 +1019,8 @@ with tab1:
             lane_found = False
             if use_lanes and HAS_CV2:
                 from src.lane_detection import detect_lanes, draw_lanes
-                left_line, right_line = detect_lanes(det_img)
+                left_line, right_line = detect_lanes(
+                    det_img, roi_bottom=lane_roi_bottom)
                 lane_found = left_line is not None or right_line is not None
                 if lane_found:
                     det_img = draw_lanes(det_img, left_line, right_line)
@@ -1274,6 +1287,7 @@ streamlit run app/streamlit_app.py
                         'adaptive_mode': adaptive_mode,
                         'use_depth_risk': use_depth_risk,
                         'class_map': det_class_map,
+                        'lane_roi_bottom': lane_roi_bottom,
                     },
                 }
                 st.rerun()
@@ -1668,7 +1682,8 @@ with tab_live:
 
             if HAS_CV2:
                 from src.lane_detection import detect_lanes, draw_lanes
-                l_left, l_right = detect_lanes(live_arr)
+                l_left, l_right = detect_lanes(
+                    live_arr, roi_bottom=lane_roi_bottom)
                 if l_left is not None or l_right is not None:
                     live_arr = draw_lanes(live_arr, l_left, l_right)
 
@@ -1787,7 +1802,9 @@ Enhanced Output + Lanes + Detections + Risk
   reflective roadside posts flagged in our own evaluation (paper
   Section VII-C); unaffected on daylight frames
 - ByteTrack multi-object tracking with persistent IDs across frames
-- Classical Canny/Hough lane detection
+- Classical Canny/Hough lane detection, with a sidebar-adjustable
+  region of interest for cameras mounted low enough that the
+  dashboard/steering wheel — not road — fills the lower frame
 - Proximity risk estimation (LOW/MEDIUM/HIGH) from an actual MiDaS
   small monocular depth pass on the enhanced frame — a per-box
   relative-distance lookup rather than the earlier box-geometry

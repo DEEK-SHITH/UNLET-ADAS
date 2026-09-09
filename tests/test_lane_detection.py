@@ -139,3 +139,43 @@ def test_draw_lanes_fill_alpha_requires_both_lines():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
     out = draw_lanes(frame, (40, 299, 180, 165), None, fill_alpha=0.2)
     assert out.shape == frame.shape
+
+
+def test_roi_bottom_excludes_a_dashboard_region():
+    # Regression test for a real report: a dashboard/steering-wheel
+    # mounted camera has the dashboard filling the lower part of the
+    # frame instead of road. Its high-contrast edges (gauge rings,
+    # wheel silhouette) get picked up as fake "lane lines" when the
+    # ROI's bottom edge is left at the frame's actual bottom. Lowering
+    # roi_bottom to end the ROI above that region must exclude those
+    # edges from consideration entirely.
+    import cv2
+    h, w = 300, 400
+    frame = np.full((h, w, 3), 30, dtype=np.uint8)
+    # A strong diagonal edge low in the frame (y > 0.8h) standing in
+    # for a dashboard/wheel edge -- steep enough to pass the
+    # near-horizontal filter, so with the full ROI it would normally
+    # contribute to a detected line.
+    cv2.line(frame, (150, h - 1), (250, int(h * 0.82)), (220, 220, 220), 4)
+
+    left_full, right_full = detect_lanes(frame, roi_bottom=1.0)
+    left_excl, right_excl = detect_lanes(frame, roi_bottom=0.8)
+
+    # With the dashboard region excluded, that low-lying edge must not
+    # produce a detection extending down into the excluded area.
+    for line in (left_excl, right_excl):
+        if line is not None:
+            assert line[1] <= int(h * 0.8) + 1
+            assert line[3] <= int(h * 0.8) + 1
+
+
+def test_detect_lanes_roi_bottom_changes_result_vs_default():
+    frame = _synthetic_lane_frame()
+    default_left, default_right = detect_lanes(frame)
+    restricted_left, restricted_right = detect_lanes(frame, roi_bottom=0.6)
+
+    # Restricting roi_bottom below where the synthetic lines actually
+    # are (they run down to h-1) should stop finding them, since none
+    # of their pixels fall inside the narrowed ROI any more.
+    assert default_left is not None and default_right is not None
+    assert restricted_left is None and restricted_right is None
