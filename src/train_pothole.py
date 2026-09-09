@@ -56,16 +56,6 @@ def download_dataset(api_key, dest_dir, retries=3):
     import time
     from roboflow import Roboflow
 
-    # Start from a clean directory every attempt. A previous failed run
-    # can leave dest_dir existing but empty/partial; Roboflow's SDK
-    # doesn't always treat a pre-existing target directory as "start
-    # over" the same way it does a fresh one, which can silently
-    # produce a download with no data.yaml anywhere in it (see the
-    # identical fix in src/train_signs.py's download_dataset, where a
-    # real user hit exactly this on a retry).
-    if os.path.exists(dest_dir):
-        shutil.rmtree(dest_dir)
-    os.makedirs(dest_dir, exist_ok=True)
     rf = Roboflow(api_key=api_key)
     project = rf.workspace('brad-dwyer').project('pothole-voxrl')
     # Fallback: if this ever 404s (Universe slugs can be renamed),
@@ -78,11 +68,20 @@ def download_dataset(api_key, dest_dir, retries=3):
     # mid-transfer with no exception raised, silently leaving an
     # incomplete/empty export on disk. Retry a few times before
     # concluding the download itself is broken.
+    #
+    # Deliberately NOT passing location=dest_dir here: a real user hit
+    # a reproducible bug in the identical download_dataset() in
+    # src/train_signs.py where doing so produced a "download" with no
+    # data.yaml anywhere in it, no exception raised, even after
+    # clearing dest_dir first. Letting the SDK pick its own default
+    # location (verified working via a direct diagnostic run) and
+    # moving the result into dest_dir ourselves afterward avoids
+    # whatever that internal path handling gets wrong.
     dataset = None
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            dataset = version.download('yolov8', location=dest_dir)
+            dataset = version.download('yolov8')
             break
         except Exception as e:
             last_err = e
@@ -95,25 +94,37 @@ def download_dataset(api_key, dest_dir, retries=3):
 
     location = dataset.location
     # Roboflow's SDK has, across versions, sometimes placed the export
-    # directly in `location` and sometimes nested it one level deeper
-    # (e.g. location/<project>-<version>/data.yaml) despite the
-    # explicit `location=` argument above. Search for data.yaml rather
-    # than assume where it landed, so a download that actually
-    # succeeded doesn't look like a failure just because of a path
-    # mismatch.
-    if os.path.exists(os.path.join(location, 'data.yaml')):
-        return location
-    for root, _, files in os.walk(location):
-        if 'data.yaml' in files:
-            return root
+    # directly in `location` and sometimes nested it one level deeper.
+    # Search for data.yaml rather than assume where it landed, so a
+    # download that actually succeeded doesn't look like a failure
+    # just because of a path mismatch.
+    if not os.path.exists(os.path.join(location, 'data.yaml')):
+        for root, _, files in os.walk(location):
+            if 'data.yaml' in files:
+                location = root
+                break
+        else:
+            raise RuntimeError(
+                f"Roboflow reported the dataset was downloaded to "
+                f"'{location}' but no data.yaml was found anywhere "
+                "under it. This usually means the download itself "
+                "failed silently rather than the file just being in "
+                "an unexpected subfolder — double check your Roboflow "
+                "API key and network connection, then look at the "
+                "download log printed above this error for the real "
+                "cause.")
 
-    raise RuntimeError(
-        f"Roboflow reported the dataset was downloaded to '{location}' "
-        "but no data.yaml was found anywhere under it. This usually "
-        "means the download itself failed silently rather than the "
-        "file just being in an unexpected subfolder — double check "
-        "your Roboflow API key and network connection, then look at "
-        "the download log printed above this error for the real cause.")
+    # Move the verified-good download into the caller-requested
+    # dest_dir, so callers can still point this at a stable path (e.g.
+    # Google Drive) without us having to trust the SDK's location= arg.
+    dest_dir = os.path.abspath(dest_dir)
+    if os.path.abspath(location) != dest_dir:
+        if os.path.exists(dest_dir):
+            shutil.rmtree(dest_dir)
+        shutil.move(location, dest_dir)
+        location = dest_dir
+
+    return location
 
 
 def train(args):
