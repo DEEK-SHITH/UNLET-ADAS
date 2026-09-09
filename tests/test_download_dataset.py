@@ -8,8 +8,16 @@ it had (stale target directory, an unreliable location= kwarg, and a
 only ever found by a user hitting it live in Colab, never by CI. These
 tests fake out the Roboflow SDK so the retry/verification logic can be
 exercised offline, deterministically, for all three failure modes.
+
+`roboflow` itself is a training-only optional dependency (see
+requirements-dev.txt's comment / README's Train the .../Detector
+sections -- it's not installed for the app or CI by design), so these
+tests inject a fake module into sys.modules rather than importing the
+real package -- they work identically whether or not `roboflow`
+happens to be installed on the machine running them.
 """
 import os
+import sys
 import time
 import types
 
@@ -17,8 +25,6 @@ import pytest
 
 import src.train_pothole as train_pothole
 import src.train_signs as train_signs
-
-import roboflow
 
 
 class _FakeVersion:
@@ -90,8 +96,9 @@ def _dataset_dir(tmp_path, name, names_yaml='names: [a, b]\n'):
 
 def _patch_download(module, monkeypatch, outcomes):
     version = _FakeVersion(outcomes)
-    monkeypatch.setattr(
-        roboflow, 'Roboflow', _FakeRoboflow(_FakeProject(version)))
+    fake_roboflow_module = types.ModuleType('roboflow')
+    fake_roboflow_module.Roboflow = _FakeRoboflow(_FakeProject(version))
+    monkeypatch.setitem(sys.modules, 'roboflow', fake_roboflow_module)
     return version
 
 
