@@ -38,6 +38,30 @@ clearly visible for ADAS computer vision pipelines.
 
 ---
 
+## ⏱️ Measured Performance (CPU-only)
+
+Actual measured throughput, not an assumed "real-time" claim — run
+against real 1280×720 frames from this repo's own sample footage
+(`results/original_night_drive.mp4`) on a 4-core Intel Xeon @ 2.80GHz,
+**no GPU**:
+
+| Stage | ms/frame | FPS |
+|---|---|---|
+| Enhancement only | 224 | 4.5 |
+| Enhancement + YOLOv8n detection (imgsz=640) | 295 | 3.4 |
+| Enhancement + YOLOv8n detection (imgsz=320, Live Stream's cap) | 272 | 3.7 |
+
+Reproduce yourself with `python src/benchmark.py` — timings will vary
+by CPU. **A CUDA GPU changes this dramatically**
+(the enhancer is 21,769 parameters and YOLOv8n is small — both are
+designed to be lightweight), but no GPU-measured number is published
+here since it depends entirely on the GPU used; measure on your own
+hardware rather than assuming a number. Each additional optional
+detector (pothole, road sign) enabled adds roughly one more detection
+pass's worth of latency per frame on top of the numbers above.
+
+---
+
 ## 🆙 Sharper Output & Better Detection
 
 Earlier versions resized every frame down to a small square for the
@@ -354,11 +378,19 @@ UNLET-ADAS/
 ├── src/
 │ ├── model.py # Zero-DCE++ CBAM architecture
 │ ├── losses.py # Composite loss functions
-│ ├── train.py # Training pipeline
-│ └── enhance.py # Enhancement functions
+│ ├── train.py # Main enhancer training pipeline
+│ ├── train_lowlight.py # Low-light-specialized YOLOv8 (ExDark) training
+│ ├── train_pothole.py # Pothole detector training (Roboflow)
+│ ├── train_signs.py # Road sign detector training (Roboflow)
+│ ├── enhance.py # Enhancement helper functions
+│ ├── depth.py # MiDaS depth loading + proximity risk
+│ ├── lane_detection.py # Classical Canny/Hough lane detection
+│ ├── signs.py # Sign-detection drawing helper
+│ ├── benchmark.py # Reproducible CPU/GPU throughput benchmark
+│ └── prepare_extra_lowlight.py # Extra unpaired low-light data prep
 ├── app/
 │ ├── streamlit_app.py # Web application
-│ └── zerodce_cbam_best.pt # Trained weights
+│ └── zerodce_cbam_best.pt # Trained enhancer weights
 ├── notebooks/
 │ ├── UNLET_ADAS_Colab.ipynb # Main model training (Colab)
 │ ├── UNLET_ADAS_Pothole_Colab.ipynb # Pothole detector training (Colab)
@@ -371,7 +403,8 @@ UNLET-ADAS/
 │ └── video_frames.png # Before/after frames
 ├── tests/
 │ ├── conftest.py # Test fixtures (app server, browser, test data)
-│ └── test_app.py # End-to-end UI tests (Playwright)
+│ ├── test_app.py # End-to-end UI tests (Playwright)
+│ └── test_*.py # Unit tests for src/ modules
 ├── .github/workflows/
 │ └── test.yml # CI — runs tests/ on every push
 ├── requirements.txt
@@ -387,9 +420,9 @@ UNLET-ADAS/
 |---|---|
 | Enhancement Model | Zero-DCE++ with CBAM Attention |
 | Framework | PyTorch 2.0 |
-| Detection | YOLOv8l (Ultralytics) |
-| Tracking | DeepSORT |
-| Depth Estimation | MiDaS |
+| Detection | YOLOv8 (Ultralytics) — n/s/m selectable from the sidebar |
+| Tracking | ByteTrack (via Ultralytics' built-in `.track()`) |
+| Depth Estimation | MiDaS small |
 | Web App | Streamlit |
 | Training Data | LOL Dataset (485 pairs) |
 | Deployment | Streamlit Community Cloud |
@@ -426,6 +459,36 @@ Loss = 50.0 × ColorConstancy
      +  2.0 × SSIM
      +  0.1 × Frequency
 ```
+
+---
+
+## ⚠️ Known Limitations
+
+Documented here deliberately, rather than only implied by silence.
+
+- **Road-sign detector's training domain.** `src/train_signs.py`
+  fine-tunes on Roboflow-100's `road-signs-6ih4y` dataset, whose
+  actual sign designs/text are Indonesian. It has not been validated
+  against signage from other regions — expect degraded accuracy on
+  road signs that look visually different from that training set.
+- **Main detector's night-time false positives.** The stock
+  COCO-trained YOLOv8 model (never trained on labeled street lamps)
+  can misclassify a bright point light source — a street lamp, a
+  reflection — as a Traffic Light, especially after low-light
+  enhancement's bloom around bright points. A shape heuristic in
+  `app/streamlit_app.py` (`_plausible_traffic_light_shape` — real
+  traffic lights are reliably taller than wide) suppresses the
+  clearest cases, but this is a mitigation, not a guarantee.
+- **CPU-only inference is not guaranteed real-time.** Every enabled
+  detector pass (main + optional pothole + optional sign, per frame)
+  adds latency. Actual throughput depends entirely on your hardware
+  and which optional detectors are turned on — see the app's sidebar
+  for the live per-frame timing shown during processing.
+- **Live Stream (WebRTC) detection is capped for frame-rate reasons.**
+  Live Camera's continuous stream mode runs every enabled detector at
+  a reduced resolution (`min(det_imgsz, 320)`) and skips the MiDaS
+  depth pass entirely, unlike the Image/Video tabs — a deliberate
+  trade-off to keep the stream from stalling on CPU, not an oversight.
 
 ---
 
