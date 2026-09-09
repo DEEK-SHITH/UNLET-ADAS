@@ -419,6 +419,29 @@ def estimate_risk(x1, y1, x2, y2, frame_w, frame_h, depth_map=None):
     return estimate_risk_geometry(x1, y1, x2, y2, frame_w, frame_h)
 
 
+def _plausible_traffic_light_shape(x1, y1, x2, y2):
+    """
+    Best-effort mitigation for a real, observed false positive: a
+    bright street lamp -- especially the bloom/halo low-light
+    enhancement adds around bright points at night -- can get
+    classified as 'Traffic Light' by the stock COCO-trained YOLOv8
+    detector, which has never seen a labeled street lamp as its own
+    class. A real traffic light housing is reliably taller than it is
+    wide (the classic vertical 3-light stack); a round glare blob is
+    typically closer to square. Reject only clearly-too-wide boxes.
+
+    This is a coarse heuristic, not a real fix: it won't catch an
+    elongated false positive, and could in principle reject an
+    unusually-shaped real traffic light (e.g. a horizontal-mount
+    signal). It only ever suppresses 'Traffic Light' detections that
+    fail this shape check — every other class is unaffected.
+    """
+    w, h = x2 - x1, y2 - y1
+    if h <= 0:
+        return False
+    return (w / h) <= 0.75
+
+
 def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
     """Box outlined by risk level; class/ID/confidence as the label."""
     color = RISK_COLORS[risk]
@@ -458,6 +481,9 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         name, _ = class_map[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        if name == 'Traffic Light' and not _plausible_traffic_light_shape(
+                x1, y1, x2, y2):
+            continue
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
         high_risk = high_risk or risk == 'HIGH'
         _draw_detection(
@@ -503,6 +529,9 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         name, _ = class_map[cls_id]
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        if name == 'Traffic Light' and not _plausible_traffic_light_shape(
+                x1, y1, x2, y2):
+            continue
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
         high_risk = high_risk or risk == 'HIGH'
         track_id = int(ids[i]) if ids is not None else None
@@ -1433,6 +1462,24 @@ with tab_live:
                 help="Off by default — object detection roughly halves "
                      "the frame rate again on top of enhancement. Turn "
                      "it on if your machine can keep up.")
+            col_ls1, col_ls2 = st.columns(2)
+            live_stream_pothole = col_ls1.checkbox(
+                "Pothole detection", value=False,
+                key='live_stream_pothole', disabled=not has_pothole,
+                help="Adds a full extra detector pass every frame — "
+                     "each detector enabled here costs roughly as much "
+                     "as the main YOLOv8 toggle above. Stacking several "
+                     "on a CPU-only machine can make the stream choppy."
+                     if has_pothole else
+                     "Pothole detector not trained — see "
+                     "src/train_pothole.py.")
+            live_stream_signs = col_ls2.checkbox(
+                "Road sign detection", value=False,
+                key='live_stream_signs', disabled=not has_signs,
+                help="Adds a full extra detector pass every frame — "
+                     "same frame-rate cost as pothole detection above."
+                     if has_signs else
+                     "Sign detector not trained — see src/train_signs.py.")
             live_quality = st.radio(
                 "Live quality", ["⚡ Fast (480p)", "🔍 Sharp (720p)"],
                 horizontal=True, index=0, key='live_quality',
@@ -1455,21 +1502,66 @@ with tab_live:
                     model, DEVICE, Image.fromarray(rgb),
                     adaptive=adaptive_mode, proxy_size=128))
 
-                if live_stream_detect and has_yolo:
+                live_conf = None
+                if live_stream_detect or live_stream_pothole or live_stream_signs:
                     from src.enhance import scene_aware_conf
                     live_conf = scene_aware_conf(
                         det_conf, img_bgr.astype(np.float32).mean() / 255)
-                    # Capped well below the sidebar's det_imgsz — live
-                    # frame-by-frame inference needs to stay fast or
-                    # the stream stalls, unlike a one-shot image/video.
-                    # Depth-based risk is intentionally NOT run here —
-                    # this path already runs the enhancer every single
-                    # frame in real time; a third full network pass
-                    # per frame would stall the stream. It still uses
-                    # the box-geometry risk fallback (depth_map=None).
+                # Capped well below the sidebar's det_imgsz for every
+                # detector below — live frame-by-frame inference needs
+                # to stay fast or the stream stalls, unlike a one-shot
+                # image/video. Depth-based risk is intentionally NOT
+                # run here — this path already runs the enhancer every
+                # single frame in real time; a fourth full network
+                # pass per frame would stall the stream further. The
+                # main detector still uses the box-geometry risk
+                # fallback (depth_map=None).
+                live_imgsz = min(det_imgsz, 320)
+
+                if live_stream_detect and has_yolo:
                     enh_rgb, _, _, _ = detect_and_draw(
                         yolo, enh_rgb, conf=live_conf,
-                        imgsz=min(det_imgsz, 320), class_map=det_class_map)
+                        imgsz=live_imgsz, class_map=det_class_map)
+
+                # Pothole/sign detection here mirror the Live Snapshot
+                # tab's drawing (src.signs.draw_sign_detections and the
+                # inline pothole loop), except drawn straight onto
+                # enh_rgb with no BGR round-trip -- same convention as
+                # the Video tab's per-frame loop, and for the same
+                # reason: this callback is on the real-time frame path
+                # and every extra conversion costs time. Colors are
+                # RGB-ordered here, not BGR.
+                if live_stream_pothole and has_pothole:
+                    pot_res = pothole_yolo(
+                        enh_rgb, conf=live_conf, imgsz=live_imgsz,
+                        verbose=False)[0]
+                    for box in pot_res.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        pconf = float(box.conf[0])
+                        cv2.rectangle(
+                            enh_rgb, (x1, y1), (x2, y2), (255, 165, 0), 2)
+                        cv2.putText(
+                            enh_rgb, f'Pothole {pconf:.0%}',
+                            (x1, max(y1 - 8, 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+
+                if live_stream_signs and has_signs:
+                    sign_res = sign_yolo(
+                        enh_rgb, conf=live_conf, imgsz=live_imgsz,
+                        verbose=False)[0]
+                    for box in sign_res.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        sconf = float(box.conf[0])
+                        cls_name = sign_res.names[int(box.cls[0])]
+                        digest = hashlib.md5(
+                            str(cls_name).encode('utf-8')).digest()
+                        color = _SIGN_PALETTE_RGB[
+                            digest[0] % len(_SIGN_PALETTE_RGB)]
+                        cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(
+                            enh_rgb, f'{cls_name} {sconf:.0%}',
+                            (x1, max(y1 - 8, 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 orig_labeled = img_bgr.copy()
@@ -1716,8 +1808,9 @@ Enhanced Output + Lanes + Detections + Risk
 - Optional dedicated pothole detector (separate fine-tuned YOLOv8
   single-class model — trainable via `src/train_pothole.py`)
 - Optional dedicated road-sign detector (separate fine-tuned YOLOv8
-  model covering crosswalk/speedlimit/stop/trafficlight signs — COCO
-  has no such classes — trainable via `src/train_signs.py`)
+  model, trained on Roboflow-100's `road-signs-6ih4y` real-world
+  multi-class road-sign dataset — COCO has no such classes —
+  trainable via `src/train_signs.py`)
 
 **Application**
 - **Image tab** — upload, enhance, detect, side-by-side compare
@@ -1726,8 +1819,10 @@ Enhanced Output + Lanes + Detections + Risk
   to variable-frame-rate footage and read hiccups, with a fast mode
   that halves detection cost by skipping every other frame
 - **Live Camera tab** — snapshot mode plus a real-time WebRTC live
-  stream with side-by-side original/enhanced comparison and a
-  Fast (480p) / Sharp (720p) quality toggle
+  stream with side-by-side original/enhanced comparison, a
+  Fast (480p) / Sharp (720p) quality toggle, and optional per-frame
+  main/pothole/sign detection (each toggle costs a further detector
+  pass per frame, so they're off by default)
 - Custom dark theme, responsive layout, clear status/progress
   messaging throughout
 
@@ -1737,6 +1832,32 @@ Enhanced Output + Lanes + Detections + Risk
     """)
 
     st.markdown("---")
+    st.markdown("""
+### Known Limitations
+Documented here deliberately, rather than only implied by silence.
+
+- **Road-sign detector's training domain.** Fine-tuned on Roboflow-100's
+  `road-signs-6ih4y` dataset, whose actual sign designs/text are
+  Indonesian. It has not been validated against signage from other
+  regions — expect degraded accuracy on road signs that look visually
+  different from that training set, not a guarantee of general
+  road-sign detection worldwide.
+- **Main detector's night-time false positives.** The stock
+  COCO-trained YOLOv8 model (never trained on labeled street lamps)
+  can still misclassify a bright point light source as a Traffic
+  Light, especially after low-light enhancement's bloom around bright
+  points. A shape heuristic (real traffic lights are reliably taller
+  than wide; a glare blob is closer to square) suppresses the clearest
+  cases, but this is a mitigation, not a fix — an elongated false
+  positive can still slip through.
+- **CPU-only inference is not guaranteed real-time.** Measured on a
+  4-core CPU with no GPU (`python src/benchmark.py`, real 1280×720
+  footage): enhancement alone runs ~4.5 FPS, enhancement + one YOLOv8n
+  detection pass ~3.4 FPS. Each additional optional detector (pothole,
+  road sign) enabled adds roughly another detection pass's worth of
+  latency on top. A CUDA GPU changes this substantially — measure your
+  own hardware with the same script rather than assuming a number.
+    """)
     st.info(
         "Live Demo: "
         "https://unlet-adas-g4xvfhrfamxaqhpfuaqtri.streamlit.app\n\n"
