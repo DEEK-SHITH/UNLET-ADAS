@@ -82,9 +82,9 @@ now:
   present and enables the toggle; without them, it stays off and says
   why.
 - **Optional dedicated road-sign detector.** Same situation as
-  potholes — COCO has no generic warning/regulatory-sign classes
-  (crosswalk, speed limit, stop, traffic light signs), so this is
-  another separate YOLOv8 model, fine-tuned with `src/train_signs.py`
+  potholes — COCO has no generic warning/regulatory-sign classes, so
+  this is another separate YOLOv8 model, fine-tuned with
+  `src/train_signs.py` on a real-world, multi-class road-sign dataset
   (see [Train the Road Sign Detector](#train-the-road-sign-detector)
   below). Same auto-detect-the-weights, degrade-gracefully-without-them
   behavior as the pothole detector.
@@ -215,10 +215,9 @@ key into the config cell and run top to bottom (~15–25 min on a T4).
 ### Train the Road Sign Detector
 Optional — the app runs fine without it, just with the sign-detection
 toggle disabled. COCO/YOLOv8 has no generic road-sign classes, so
-this fine-tunes a small, dedicated multi-class YOLOv8 model
-(crosswalk / speedlimit / stop / trafficlight) rather than retraining
-the main ADAS detector — the same approach as the pothole detector
-above.
+this fine-tunes a small, dedicated multi-class YOLOv8 model rather
+than retraining the main ADAS detector — the same approach as the
+pothole detector above.
 ```bash
 pip install roboflow
 python src/train_signs.py --roboflow_key YOUR_FREE_API_KEY
@@ -226,9 +225,12 @@ python src/train_signs.py --roboflow_key YOUR_FREE_API_KEY
 ```
 Get a free API key at [app.roboflow.com](https://app.roboflow.com)
 (Settings → API Keys). Dataset:
-[Road Sign Detection](https://universe.roboflow.com/roboflow-100/road-signs-6ih4y)
-(877 images, 4 classes — one of Roboflow's own curated Roboflow-100
-benchmark datasets).
+[road-signs-6ih4y](https://universe.roboflow.com/roboflow-100/road-signs-6ih4y)
+— one of Roboflow's own curated Roboflow-100 benchmark datasets. It's
+a real-world, multi-class road-sign taxonomy (several dozen specific
+sign types), not a small fixed set; training reads the actual class
+list from the downloaded `data.yaml`, and the app colors detections by
+hashing the class name rather than assuming specific names.
 
 Prefer a free GPU over local CPU training? Open
 [`notebooks/UNLET_ADAS_Signs_Colab.ipynb`](notebooks/UNLET_ADAS_Signs_Colab.ipynb)
