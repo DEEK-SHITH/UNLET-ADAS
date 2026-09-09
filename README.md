@@ -97,12 +97,11 @@ now:
   — no additional training data needed, consistent with the project's
   lightweight, real-time design. Works best on straight/gently-curved
   roads with visible markings; a linear line fit can't perfectly hug
-  a tight curve. The region of interest assumes a windshield-mounted
-  camera by default (road fills the whole lower frame) — a sidebar
-  slider ("road region bottom edge") lets you exclude a
-  dashboard/steering-wheel region for lower-mounted cameras, where
-  the dashboard's own high-contrast edges would otherwise get
-  mistaken for lane boundaries.
+  a tight curve. On the Video tab, a dashboard/steering-wheel region
+  (common on a low-mounted camera) is auto-detected from a few early
+  frames and excluded automatically — the dashboard is physically
+  static frame to frame while the road moves, so no manual tuning is
+  needed (see `estimate_dashboard_cutoff`).
 - **Optional dedicated pothole detector.** COCO/YOLOv8 has no pothole
   class, so this isn't a flag on the existing detector — it's a
   separate, single-class YOLOv8 model you fine-tune yourself with
@@ -494,6 +493,24 @@ Documented here deliberately, rather than only implied by silence.
   a reduced resolution (`min(det_imgsz, 320)`) and skips the MiDaS
   depth pass entirely, unlike the Image/Video tabs — a deliberate
   trade-off to keep the stream from stalling on CPU, not an oversight.
+- **Dashboard auto-detection is a heuristic, not a guarantee.**
+  `estimate_dashboard_cutoff` tells a static dashboard/steering wheel
+  apart from a moving road using pixel variance across a handful of
+  early frames. It intentionally does nothing (falls back to the
+  full-frame default) for a video under 3 frames, a stationary
+  vehicle at the very start of the clip, or a mount with enough
+  vibration that the dashboard isn't truly static — better to leave
+  lane detection at its old behavior than guess wrong. Only the Video
+  tab auto-detects; the Image and Live Snapshot tabs use a single
+  frame with no motion to compare, so they always use the full-frame
+  default.
+- **This is a research/coursework prototype, not a certified ADAS
+  product.** It has no fail-safe redundancy, no sensor fusion (camera
+  only — no radar/lidar), and hasn't been validated against a formal
+  safety standard. Treat every detection, lane line, and risk rating
+  as advisory, not authoritative — this project demonstrates
+  low-light enhancement and perception techniques, it does not
+  replace attentive driving.
 
 ---
 

@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from src.lane_detection import (
-    _average_slope_line, detect_lanes, draw_lanes,
+    _average_slope_line, detect_lanes, draw_lanes, estimate_dashboard_cutoff,
 )
 
 
@@ -179,3 +179,52 @@ def test_detect_lanes_roi_bottom_changes_result_vs_default():
     # of their pixels fall inside the narrowed ROI any more.
     assert default_left is not None and default_right is not None
     assert restricted_left is None and restricted_right is None
+
+
+def _frames_with_static_bottom(n=5, w=200, h=300, static_frac=0.4, seed=0):
+    """n frames sharing an identical bottom static_frac (a fake
+    dashboard) with random noise above it (a fake moving road)."""
+    rng = np.random.default_rng(seed)
+    split = int(h * (1 - static_frac))
+    static_bottom = rng.integers(0, 255, size=(h - split, w, 3), dtype=np.uint8)
+    frames = []
+    for _ in range(n):
+        top = rng.integers(0, 255, size=(split, w, 3), dtype=np.uint8)
+        frames.append(np.concatenate([top, static_bottom], axis=0))
+    return frames
+
+
+def test_estimate_dashboard_cutoff_finds_a_static_bottom_region():
+    frames = _frames_with_static_bottom(static_frac=0.4)
+    cutoff = estimate_dashboard_cutoff(frames)
+    assert 0.55 <= cutoff <= 0.65  # ~0.6 = 1 - 0.4, some tolerance
+
+
+def test_estimate_dashboard_cutoff_no_exclusion_when_everything_moves():
+    rng = np.random.default_rng(1)
+    frames = [rng.integers(0, 255, size=(300, 200, 3), dtype=np.uint8)
+              for _ in range(5)]
+    assert estimate_dashboard_cutoff(frames) == 1.0
+
+
+def test_estimate_dashboard_cutoff_no_exclusion_when_whole_frame_static():
+    # A stationary/parked camera (or a frozen/duplicated clip): the
+    # entire frame is "static", not just a dashboard. Trusting that
+    # would exclude almost everything, so this must bail out to 1.0
+    # rather than returning a near-zero cutoff.
+    frame = np.zeros((300, 200, 3), dtype=np.uint8)
+    frames = [frame.copy() for _ in range(5)]
+    assert estimate_dashboard_cutoff(frames) == 1.0
+
+
+def test_estimate_dashboard_cutoff_needs_at_least_three_frames():
+    frames = _frames_with_static_bottom(n=2, static_frac=0.4)
+    assert estimate_dashboard_cutoff(frames) == 1.0
+
+
+def test_estimate_dashboard_cutoff_ignores_a_tiny_static_sliver():
+    # A couple of incidentally-static rows (e.g. a very dark, low-
+    # texture strip right at the bottom) shouldn't be mistaken for a
+    # real dashboard region.
+    frames = _frames_with_static_bottom(static_frac=0.03)
+    assert estimate_dashboard_cutoff(frames) == 1.0

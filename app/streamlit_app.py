@@ -776,15 +776,38 @@ _det_model_options = {
 if _has_lowlight_weights:
     _det_model_options[_LOWLIGHT_LABEL] = _lowlight_weights
 
-det_model_choice = st.sidebar.selectbox(
-    'Detector Model', list(_det_model_options.keys()),
-    index=1,
-    help='Larger COCO models are more accurate but slower; yolov8s '
-         'is the default balance of speed/accuracy. The fine-tuned '
-         'low-light option (if trained) covers only Person/Bicycle/'
-         'Car/Motorcycle/Bus — no Traffic Light/Stop Sign/Truck — '
-         'but is trained on real night images instead of only '
-         'daylight COCO photos.')
+# Model choice, confidence, and resolution are real tuning knobs, but
+# exposing them as top-level sidebar controls made every session
+# start with three decisions to make before anything even ran.
+# Tucked into a collapsed "Advanced" section with tested defaults
+# (yolov8s, conf 0.25 auto-raised at night, imgsz 640) that just work
+# for typical Indian dashcam driving footage without touching
+# anything — open it only if you actually want to trade accuracy for
+# speed, or vice versa.
+with st.sidebar.expander('⚙️ Advanced: Model & Detection Tuning',
+                          expanded=False):
+    det_model_choice = st.selectbox(
+        'Detector Model', list(_det_model_options.keys()),
+        index=1,
+        help='Larger COCO models are more accurate but slower; yolov8s '
+             'is the default balance of speed/accuracy. The fine-tuned '
+             'low-light option (if trained) covers only Person/Bicycle/'
+             'Car/Motorcycle/Bus — no Traffic Light/Stop Sign/Truck — '
+             'but is trained on real night images instead of only '
+             'daylight COCO photos.')
+    det_conf = st.slider(
+        'Detection Confidence', 0.1, 0.9, 0.25, 0.05,
+        help='Base threshold for daylight scenes. On dark/night frames '
+             'this is auto-raised by up to +0.10 (e.g. 0.25 → 0.35) to '
+             'cut false positives on reflective roadside posts, seen in '
+             "our own evaluation (paper Section VII-C) at this default "
+             'on night footage — daylight frames are unaffected.')
+    det_imgsz = st.select_slider(
+        'Detection Resolution', options=[320, 480, 640, 832, 960],
+        value=640,
+        help='Higher resolution improves detection of small/far '
+             'objects (pedestrians, distant vehicles) at some speed cost.')
+
 is_lowlight_model = det_model_choice == _LOWLIGHT_LABEL
 det_class_map = LOWLIGHT_CLASSES if is_lowlight_model else ADAS_CLASSES
 if is_lowlight_model:
@@ -806,18 +829,6 @@ adaptive_mode = st.sidebar.checkbox(
          'already well-lit (daytime) frames instead of '
          'over-brightening them, while still fully enhancing '
          'dark, night, or shaded hillside footage.')
-det_conf = st.sidebar.slider(
-    'Detection Confidence', 0.1, 0.9, 0.25, 0.05,
-    help='Base threshold for daylight scenes. On dark/night frames '
-         'this is auto-raised by up to +0.10 (e.g. 0.25 → 0.35) to '
-         'cut false positives on reflective roadside posts, seen in '
-         "our own evaluation (paper Section VII-C) at this default "
-         'on night footage — daylight frames are unaffected.')
-det_imgsz = st.sidebar.select_slider(
-    'Detection Resolution', options=[320, 480, 640, 832, 960],
-    value=640,
-    help='Higher resolution improves detection of small/far '
-         'objects (pedestrians, distant vehicles) at some speed cost.')
 use_depth_risk = st.sidebar.checkbox(
     '🔭 Depth-based proximity risk (MiDaS)', value=has_depth,
     disabled=not has_depth,
@@ -831,18 +842,6 @@ use_depth_risk = st.sidebar.checkbox(
          'MiDaS depth model unavailable (needs internet access on '
          'first run) — falling back to the box-geometry risk '
          'heuristic.')
-lane_roi_bottom_pct = st.sidebar.slider(
-    'Lane detection: road region bottom edge', 50, 100, 100, 5,
-    help='Percent of the frame height, from the top, where the road '
-         "region ends. Leave at 100% for a windshield-mounted camera "
-         "(road fills the whole bottom of the frame). If lane lines "
-         "look like they're tracing your dashboard or steering wheel "
-         "instead of the road — common with a low, dashboard-mounted "
-         "camera — lower this to exclude that region; its high-"
-         "contrast gauge/wheel edges otherwise get mistaken for lane "
-         "boundaries.")
-lane_roi_bottom = lane_roi_bottom_pct / 100.0
-
 st.sidebar.markdown("<div class='sb-section'>🖥️ System Status</div>",
                      unsafe_allow_html=True)
 if 'cuda' in str(DEVICE):
@@ -1019,8 +1018,12 @@ with tab1:
             lane_found = False
             if use_lanes and HAS_CV2:
                 from src.lane_detection import detect_lanes, draw_lanes
-                left_line, right_line = detect_lanes(
-                    det_img, roi_bottom=lane_roi_bottom)
+                # No dashboard auto-detection here -- that needs a few
+                # consecutive frames to tell static dashboard from
+                # moving road (see estimate_dashboard_cutoff), which a
+                # single uploaded photo doesn't have. Uses the default
+                # full-frame ROI; the Video tab auto-detects per-clip.
+                left_line, right_line = detect_lanes(det_img)
                 lane_found = left_line is not None or right_line is not None
                 if lane_found:
                     det_img = draw_lanes(det_img, left_line, right_line)
@@ -1193,6 +1196,22 @@ streamlit run app/streamlit_app.py
             W_v = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             H_v = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             tot_v = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # Auto-detect a dashboard/steering-wheel region instead of
+            # asking the user to tune it: the dashboard is physically
+            # static frame to frame while the road moves, so a few
+            # early frames are enough to tell them apart. See
+            # estimate_dashboard_cutoff's docstring. Falls back to no
+            # exclusion (the previous, windshield-mounted-camera
+            # behavior) if nothing confidently static is found.
+            from src.lane_detection import estimate_dashboard_cutoff
+            probe_frames = []
+            for _ in range(8):
+                ret, f = cap.read()
+                if not ret:
+                    break
+                probe_frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+            auto_lane_roi_bottom = estimate_dashboard_cutoff(probe_frames)
             cap.release()
             total_dur = tot_v / fps_v
 
@@ -1200,6 +1219,11 @@ streamlit run app/streamlit_app.py
                 f"Video: {W_v}x{H_v} @ {fps_v:.0f}fps | "
                 f"{tot_v} frames | "
                 f"{total_dur:.1f}s total")
+            if auto_lane_roi_bottom < 1.0:
+                st.caption(
+                    "🚗 Detected a static dashboard/steering-wheel region "
+                    "at the bottom of the frame — lane detection will "
+                    "automatically ignore it.")
 
             # Keyed to this specific file so the default adapts to each
             # newly uploaded video (defaults to the whole thing, up to
@@ -1287,7 +1311,7 @@ streamlit run app/streamlit_app.py
                         'adaptive_mode': adaptive_mode,
                         'use_depth_risk': use_depth_risk,
                         'class_map': det_class_map,
-                        'lane_roi_bottom': lane_roi_bottom,
+                        'lane_roi_bottom': auto_lane_roi_bottom,
                     },
                 }
                 st.rerun()
@@ -1682,8 +1706,9 @@ with tab_live:
 
             if HAS_CV2:
                 from src.lane_detection import detect_lanes, draw_lanes
-                l_left, l_right = detect_lanes(
-                    live_arr, roi_bottom=lane_roi_bottom)
+                # No dashboard auto-detection here either -- see the
+                # matching comment in the Image tab above.
+                l_left, l_right = detect_lanes(live_arr)
                 if l_left is not None or l_right is not None:
                     live_arr = draw_lanes(live_arr, l_left, l_right)
 
@@ -1802,9 +1827,11 @@ Enhanced Output + Lanes + Detections + Risk
   reflective roadside posts flagged in our own evaluation (paper
   Section VII-C); unaffected on daylight frames
 - ByteTrack multi-object tracking with persistent IDs across frames
-- Classical Canny/Hough lane detection, with a sidebar-adjustable
-  region of interest for cameras mounted low enough that the
-  dashboard/steering wheel — not road — fills the lower frame
+- Classical Canny/Hough lane detection. On the Video tab, a
+  dashboard/steering-wheel region (common on a low-mounted camera) is
+  auto-detected from a few early frames and automatically excluded —
+  no manual tuning needed; see `estimate_dashboard_cutoff` in
+  `src/lane_detection.py`
 - Proximity risk estimation (LOW/MEDIUM/HIGH) from an actual MiDaS
   small monocular depth pass on the enhanced frame — a per-box
   relative-distance lookup rather than the earlier box-geometry
@@ -1874,6 +1901,21 @@ Documented here deliberately, rather than only implied by silence.
   road sign) enabled adds roughly another detection pass's worth of
   latency on top. A CUDA GPU changes this substantially — measure your
   own hardware with the same script rather than assuming a number.
+- **Dashboard auto-detection (Video tab lane detection) is a
+  heuristic, not a guarantee.** It tells a static dashboard/steering
+  wheel apart from moving road using pixel variance across a few
+  early frames, and intentionally does nothing (keeps the old
+  full-frame behavior) whenever it isn't confident — a stationary
+  vehicle at the clip's start, a short clip, or a mount vibrating
+  enough that the dashboard isn't truly static. Only the Video tab
+  auto-detects; Image/Live Snapshot use a single frame with no motion
+  to compare.
+- **This is a research/coursework prototype, not a certified ADAS
+  product.** No sensor fusion (camera only), no fail-safe redundancy,
+  no formal safety validation. Every detection, lane line, and risk
+  rating here is advisory — this project demonstrates low-light
+  enhancement and perception techniques, it does not replace
+  attentive driving.
     """)
     st.info(
         "Live Demo: "
