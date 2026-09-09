@@ -54,7 +54,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 
-def download_dataset(api_key, dest_dir, retries=3):
+def download_dataset(api_key, dest_dir, retries=5):
     """
     Download the Roboflow-100 road-signs dataset in YOLOv8 format,
     from Roboflow's own "roboflow-100" benchmark-collection account.
@@ -72,65 +72,79 @@ def download_dataset(api_key, dest_dir, retries=3):
     version = project.version(2)
 
     # Roboflow's download occasionally stalls or drops the connection
-    # mid-transfer with no exception raised, silently leaving an
-    # incomplete/empty export on disk. Retry a few times before
-    # concluding the download itself is broken.
+    # mid-transfer with NO exception raised, silently leaving an
+    # incomplete/empty export on disk -- confirmed in practice with
+    # this exact dataset: the identical version.download('yolov8')
+    # call has succeeded outright in one run and produced an export
+    # with no data.yaml anywhere in it in another, back to back, same
+    # key, same code. So the data.yaml check below has to be *inside*
+    # the retry loop, not just the exception handling -- a "successful"
+    # call that produced nothing useful is exactly the failure mode
+    # this needs to retry past, not raise on immediately.
     #
-    # Deliberately NOT passing location=dest_dir here: a real user hit
-    # a reproducible bug where doing so produced a "download" with no
-    # data.yaml anywhere in it, no exception raised, even after
-    # clearing dest_dir first. Letting the SDK pick its own default
-    # location (verified working via a direct diagnostic run) and
-    # moving the result into dest_dir ourselves afterward avoids
-    # whatever that internal path handling gets wrong.
-    dataset = None
+    # Deliberately NOT passing location=dest_dir: an earlier version of
+    # this function did, and that turned out to reliably produce empty
+    # exports; letting the SDK pick its own default location and moving
+    # the result into dest_dir ourselves afterward avoids that.
     last_err = None
     for attempt in range(1, retries + 1):
         try:
             dataset = version.download('yolov8')
-            break
         except Exception as e:
             last_err = e
-            print(f'Download attempt {attempt}/{retries} failed: {e}')
+            print(f'Download attempt {attempt}/{retries} raised: {e}')
             if attempt < retries:
-                time.sleep(3)
-    if dataset is None:
-        raise RuntimeError(
-            f'Roboflow download failed after {retries} attempts: {last_err}')
+                time.sleep(5)
+            continue
 
-    location = dataset.location
-    # Roboflow's SDK has, across versions, sometimes placed the export
-    # directly in `location` and sometimes nested it one level deeper.
-    # Search for data.yaml rather than assume where it landed, so a
-    # download that actually succeeded doesn't look like a failure
-    # just because of a path mismatch.
-    if not os.path.exists(os.path.join(location, 'data.yaml')):
-        for root, _, files in os.walk(location):
-            if 'data.yaml' in files:
-                location = root
-                break
+        location = dataset.location
+        # Roboflow's SDK has, across versions, sometimes placed the
+        # export directly in `location` and sometimes nested it one
+        # level deeper. Search for data.yaml rather than assume where
+        # it landed, so a download that actually succeeded doesn't
+        # look like a failure just because of a path mismatch.
+        found = None
+        if os.path.exists(os.path.join(location, 'data.yaml')):
+            found = location
         else:
-            raise RuntimeError(
-                f"Roboflow reported the dataset was downloaded to "
-                f"'{location}' but no data.yaml was found anywhere "
-                "under it. This usually means the download itself "
-                "failed silently rather than the file just being in "
-                "an unexpected subfolder — double check your Roboflow "
-                "API key and network connection, then look at the "
-                "download log printed above this error for the real "
-                "cause.")
+            for root, _, files in os.walk(location):
+                if 'data.yaml' in files:
+                    found = root
+                    break
 
-    # Move the verified-good download into the caller-requested
-    # dest_dir, so callers can still point this at a stable path (e.g.
-    # Google Drive) without us having to trust the SDK's location= arg.
-    dest_dir = os.path.abspath(dest_dir)
-    if os.path.abspath(location) != dest_dir:
-        if os.path.exists(dest_dir):
-            shutil.rmtree(dest_dir)
-        shutil.move(location, dest_dir)
-        location = dest_dir
+        if found:
+            # Move the verified-good download into the
+            # caller-requested dest_dir, so callers can still point
+            # this at a stable path (e.g. Google Drive) without us
+            # having to trust the SDK's location= arg.
+            dest_dir = os.path.abspath(dest_dir)
+            if os.path.abspath(found) != dest_dir:
+                if os.path.exists(dest_dir):
+                    shutil.rmtree(dest_dir)
+                shutil.move(found, dest_dir)
+                found = dest_dir
+            return found
 
-    return location
+        contents = (os.listdir(location) if os.path.isdir(location)
+                    else '<directory does not exist>')
+        last_err = RuntimeError(
+            f"reported location '{location}' but no data.yaml "
+            f"anywhere under it (contents: {contents})")
+        print(f'Download attempt {attempt}/{retries} produced no '
+              f'data.yaml: {last_err}')
+        if attempt < retries:
+            time.sleep(5)
+
+    raise RuntimeError(
+        f'Roboflow download failed after {retries} attempts: {last_err}\n'
+        'This dataset has shown intermittent Roboflow-side failures -- '
+        'the exact same call can succeed once and come back empty the '
+        'next time. If it keeps failing after several retries, wait a '
+        'few minutes and try again, or download it manually from '
+        'https://universe.roboflow.com/roboflow-100/road-signs-6ih4y '
+        '(Download Dataset -> YOLOv8 -> zip), extract it, and pass '
+        '--data_yaml pointing at the extracted data.yaml instead of '
+        '--roboflow_key.')
 
 
 def train(args):
