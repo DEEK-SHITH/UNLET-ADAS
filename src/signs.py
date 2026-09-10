@@ -13,12 +13,13 @@ the color logic in one place matters more than it would for a small
 fixed set.
 
 Colors are assigned by hashing the class name rather than a hardcoded
-per-class dict: the dataset this project trains against
-(Roboflow-100's road-signs-6ih4y) turned out to be a large, real-world
-taxonomy of specific sign types rather than a small handful of English
-labels, so the class list can't be enumerated by name up front. Hashing
-still gives each class a distinct, stable color across runs without
-needing to know the class list ahead of time.
+per-class dict: the dataset this project trains against (currently
+indiantrafficsigns/indian-traffic-signs1, see src/train_signs.py)
+turned out to be a large, real-world taxonomy of specific sign types
+rather than a small handful of English labels, so the class list
+can't be enumerated by name up front. Hashing still gives each class
+a distinct, stable color across runs without needing to know the
+class list ahead of time.
 """
 
 import hashlib

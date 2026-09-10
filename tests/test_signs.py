@@ -67,10 +67,10 @@ def test_draw_sign_detections_zero_boxes_leaves_frame_unchanged():
 
 
 def test_color_for_class_is_deterministic():
-    # The real dataset's class list (Roboflow-100's road-signs-6ih4y)
-    # turned out to be several dozen specific sign types rather than a
-    # small fixed set of English names (see src/train_signs.py), so
-    # colors are hashed from the class name instead of looked up in a
+    # The real dataset's class list (currently indian-traffic-signs1,
+    # see src/train_signs.py) runs into several dozen specific sign
+    # types rather than a small fixed set of English names, so colors
+    # are hashed from the class name instead of looked up in a
     # hardcoded dict. Same name must always map to the same color.
     assert _color_for_class('stop') == _color_for_class('stop')
     assert _color_for_class('stop') in _PALETTE
