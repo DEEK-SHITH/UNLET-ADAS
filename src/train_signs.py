@@ -9,25 +9,22 @@ situation as the pothole detector (src/train_pothole.py) — this can't
 be added by just flipping a flag on the existing detector; it needs its
 own model trained on a labeled road-sign dataset.
 
-Dataset: defaults to Roboflow's "indian-traffic-signs1" project
-(https://universe.roboflow.com/indiantrafficsigns/indian-traffic-signs1,
-~70 Indian-context sign classes, ~7.7k images), but
---roboflow_workspace/--roboflow_project/--roboflow_version point this
-at any Roboflow road-sign project instead. An earlier default,
-Roboflow-100's "road-signs-6ih4y", turned out to be a real-world,
-Indonesian-language sign taxonomy that does not generalize to Indian/
-Vienna-Convention-style sign designs (confirmed directly: the detector
-it produced had zero candidate detections, even at near-zero
-confidence, on a real dashcam frame with a clearly visible warning
-sign). The current default's exact workspace/project/version were
-found via web search rather than opened directly on Universe — verify
-them (and the class list) against that project's own "Download
-Dataset -> YOLOv8" snippet before relying on them for a real training
-run. train() reads the actual class list back from the downloaded
-data.yaml rather than assuming one regardless of which project is
-used, and the app's sign-drawing code (src/signs.py) assigns colors by
-hashing the class name for the same reason — see those files for
-details.
+Dataset: defaults to Roboflow's "indian-traffic-signs1" project,
+version 4 (https://universe.roboflow.com/indiantrafficsigns/
+indian-traffic-signs1, ~70 Indian-context sign classes, ~7.7k images
+-- workspace/project/version confirmed via that project's own
+"Download Dataset -> YOLOv8" snippet), but --roboflow_workspace/
+--roboflow_project/--roboflow_version point this at any Roboflow
+road-sign project instead. An earlier default, Roboflow-100's
+"road-signs-6ih4y", turned out to be a real-world, Indonesian-language
+sign taxonomy that does not generalize to Indian/Vienna-Convention-
+style sign designs (confirmed directly: the detector it produced had
+zero candidate detections, even at near-zero confidence, on a real
+dashcam frame with a clearly visible warning sign). train() reads the
+actual class list back from the downloaded data.yaml rather than
+assuming one regardless of which project is used, and the app's
+sign-drawing code (src/signs.py) assigns colors by hashing the class
+name for the same reason — see those files for details.
 
 Usage:
     pip install roboflow ultralytics
@@ -67,7 +64,7 @@ sys.path.insert(0, ROOT)
 
 def download_dataset(api_key, dest_dir, retries=5,
                       workspace='indiantrafficsigns', project_slug='indian-traffic-signs1',
-                      version_num=2):
+                      version_num=4):
     """
     Download a Roboflow road-sign dataset in YOLOv8 format. Defaults to
     the "indian-traffic-signs1" project, but any Roboflow project can
@@ -247,15 +244,12 @@ def parse_args():
                         'data.yaml (skips the Roboflow download).')
     p.add_argument('--roboflow_workspace', default='indiantrafficsigns',
                    help='Roboflow workspace slug. Defaults to the '
-                        'indiantrafficsigns account (found via web '
-                        'search -- verify it against that project\'s '
-                        'own "Show download code" snippet on Universe '
-                        'before relying on it); override to train on a '
-                        'different road-sign dataset without editing '
-                        'this file.')
+                        'indiantrafficsigns account; override to train '
+                        'on a different road-sign dataset without '
+                        'editing this file.')
     p.add_argument('--roboflow_project', default='indian-traffic-signs1',
                    help='Roboflow project slug (see --roboflow_workspace).')
-    p.add_argument('--roboflow_version', type=int, default=2,
+    p.add_argument('--roboflow_version', type=int, default=4,
                    help='Roboflow dataset version number (see '
                         '--roboflow_workspace).')
     p.add_argument('--dataset_dir', default='./data/signs_dataset')
