@@ -208,7 +208,7 @@ def test_signs_download_defaults_to_indian_traffic_signs(tmp_path, monkeypatch):
 
     assert fake_rf.requested_workspaces == ['indiantrafficsigns']
     assert fake_rf.requested_projects == ['indian-traffic-signs1']
-    assert project.requested_versions == [2]
+    assert project.requested_versions == [4]
 
 
 def test_signs_download_honors_a_custom_dataset(tmp_path, monkeypatch):
