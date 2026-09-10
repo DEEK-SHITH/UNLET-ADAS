@@ -9,22 +9,30 @@ situation as the pothole detector (src/train_pothole.py) — this can't
 be added by just flipping a flag on the existing detector; it needs its
 own model trained on a labeled road-sign dataset.
 
-Dataset: Roboflow-100's "road-signs-6ih4y" project — one of Roboflow's
-own curated RF100 benchmark datasets (not a random community upload),
-in its "Real World" domain group. https://universe.roboflow.com/roboflow-100/road-signs-6ih4y
-
-This is a real-world, multi-class road-sign taxonomy (several dozen
-specific sign types — pedestrian crossings, turn/U-turn restrictions,
-traffic-light colors, no-stopping/no-parking, railway crossings, lane
-and junction signage, etc. — with Indonesian-language class names),
-not a small fixed set. train() below reads the actual class list back
-from the downloaded data.yaml rather than assuming one, and the app's
+Dataset: defaults to Roboflow's "indian-traffic-signs1" project,
+version 4 (https://universe.roboflow.com/indiantrafficsigns/
+indian-traffic-signs1, ~70 Indian-context sign classes, ~7.7k images
+-- workspace/project/version confirmed via that project's own
+"Download Dataset -> YOLOv8" snippet), but --roboflow_workspace/
+--roboflow_project/--roboflow_version point this at any Roboflow
+road-sign project instead. An earlier default, Roboflow-100's
+"road-signs-6ih4y", turned out to be a real-world, Indonesian-language
+sign taxonomy that does not generalize to Indian/Vienna-Convention-
+style sign designs (confirmed directly: the detector it produced had
+zero candidate detections, even at near-zero confidence, on a real
+dashcam frame with a clearly visible warning sign). train() reads the
+actual class list back from the downloaded data.yaml rather than
+assuming one regardless of which project is used, and the app's
 sign-drawing code (src/signs.py) assigns colors by hashing the class
 name for the same reason — see those files for details.
 
 Usage:
     pip install roboflow ultralytics
     python src/train_signs.py --roboflow_key YOUR_FREE_API_KEY
+    # or, for a different dataset (e.g. a region-specific one):
+    python src/train_signs.py --roboflow_key YOUR_FREE_API_KEY \
+        --roboflow_workspace WORKSPACE --roboflow_project PROJECT \
+        --roboflow_version N
 
 Or in Colab (free GPU, no local install needed):
     Open notebooks/UNLET_ADAS_Signs_Colab.ipynb in Google Colab,
@@ -54,22 +62,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 
-def download_dataset(api_key, dest_dir, retries=5):
+def download_dataset(api_key, dest_dir, retries=5,
+                      workspace='indiantrafficsigns', project_slug='indian-traffic-signs1',
+                      version_num=4):
     """
-    Download the Roboflow-100 road-signs dataset in YOLOv8 format,
-    from Roboflow's own "roboflow-100" benchmark-collection account.
-    See the module docstring above for what this dataset actually is.
+    Download a Roboflow road-sign dataset in YOLOv8 format. Defaults to
+    the "indian-traffic-signs1" project, but any Roboflow project can
+    be used instead by passing workspace/project_slug/version_num (see
+    the --roboflow_workspace/--roboflow_project/--roboflow_version CLI
+    args) -- an earlier default's class list turned out not to match
+    every use case (see the module docstring's history), so the script
+    no longer hardcodes a single project.
     """
     import time
     from roboflow import Roboflow
 
     rf = Roboflow(api_key=api_key)
-    project = rf.workspace('roboflow-100').project('road-signs-6ih4y')
-    # Fallback: if this ever 404s (Universe slugs can be renamed),
-    # open https://universe.roboflow.com/roboflow-100/road-signs-6ih4y,
-    # click "Download Dataset" -> YOLOv8, and copy the exact
-    # rf.workspace(...).project(...) snippet Roboflow generates there.
-    version = project.version(2)
+    project = rf.workspace(workspace).project(project_slug)
+    # Fallback: if this ever 404s (Universe slugs can be renamed), open
+    # the project's Universe page, click "Download Dataset" -> YOLOv8,
+    # and copy the exact rf.workspace(...).project(...) snippet
+    # Roboflow generates there -- then pass those as
+    # --roboflow_workspace/--roboflow_project/--roboflow_version.
+    version = project.version(version_num)
 
     # Roboflow's download occasionally stalls or drops the connection
     # mid-transfer with NO exception raised, silently leaving an
@@ -137,14 +152,14 @@ def download_dataset(api_key, dest_dir, retries=5):
 
     raise RuntimeError(
         f'Roboflow download failed after {retries} attempts: {last_err}\n'
-        'This dataset has shown intermittent Roboflow-side failures -- '
-        'the exact same call can succeed once and come back empty the '
-        'next time. If it keeps failing after several retries, wait a '
-        'few minutes and try again, or download it manually from '
-        'https://universe.roboflow.com/roboflow-100/road-signs-6ih4y '
-        '(Download Dataset -> YOLOv8 -> zip), extract it, and pass '
-        '--data_yaml pointing at the extracted data.yaml instead of '
-        '--roboflow_key.')
+        'Roboflow downloads have shown intermittent server-side '
+        'failures in practice -- the exact same call can succeed once '
+        'and come back empty the next time. If it keeps failing after '
+        'several retries, wait a few minutes and try again, or '
+        f'download it manually from https://universe.roboflow.com/'
+        f'{workspace}/{project_slug} (Download Dataset -> YOLOv8 -> '
+        'zip), extract it, and pass --data_yaml pointing at the '
+        'extracted data.yaml instead of --roboflow_key.')
 
 
 def train(args):
@@ -161,8 +176,14 @@ def train(args):
                 'Pass --roboflow_key YOUR_KEY (free account at '
                 'https://app.roboflow.com) or --data_yaml to point at '
                 'an already-downloaded dataset in YOLOv8 format.')
-        print('Downloading road-sign dataset from Roboflow...')
-        dataset_dir = download_dataset(args.roboflow_key, args.dataset_dir)
+        print(f'Downloading road-sign dataset from Roboflow '
+              f'({args.roboflow_workspace}/{args.roboflow_project} '
+              f'v{args.roboflow_version})...')
+        dataset_dir = download_dataset(
+            args.roboflow_key, args.dataset_dir,
+            workspace=args.roboflow_workspace,
+            project_slug=args.roboflow_project,
+            version_num=args.roboflow_version)
         data_yaml = os.path.join(dataset_dir, 'data.yaml')
 
     # Read the real class list back from the dataset itself rather than
@@ -221,6 +242,16 @@ def parse_args():
     p.add_argument('--data_yaml', default=None,
                    help='Path to an already-downloaded dataset\'s '
                         'data.yaml (skips the Roboflow download).')
+    p.add_argument('--roboflow_workspace', default='indiantrafficsigns',
+                   help='Roboflow workspace slug. Defaults to the '
+                        'indiantrafficsigns account; override to train '
+                        'on a different road-sign dataset without '
+                        'editing this file.')
+    p.add_argument('--roboflow_project', default='indian-traffic-signs1',
+                   help='Roboflow project slug (see --roboflow_workspace).')
+    p.add_argument('--roboflow_version', type=int, default=4,
+                   help='Roboflow dataset version number (see '
+                        '--roboflow_workspace).')
     p.add_argument('--dataset_dir', default='./data/signs_dataset')
     p.add_argument('--save_dir', default='./checkpoints')
     p.add_argument('--model_size', default='n', choices=['n', 's', 'm'],

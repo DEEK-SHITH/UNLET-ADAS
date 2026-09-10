@@ -1852,8 +1852,8 @@ Enhanced Output + Lanes + Detections + Risk
 - Optional dedicated pothole detector (separate fine-tuned YOLOv8
   single-class model — trainable via `src/train_pothole.py`)
 - Optional dedicated road-sign detector (separate fine-tuned YOLOv8
-  model, trained on Roboflow-100's `road-signs-6ih4y` real-world
-  multi-class road-sign dataset — COCO has no such classes —
+  model, trained on a real-world, multi-class road-sign dataset
+  (currently `indian-traffic-signs1`) — COCO has no such classes —
   trainable via `src/train_signs.py`)
 
 **Application**
@@ -1880,12 +1880,19 @@ Enhanced Output + Lanes + Detections + Risk
 ### Known Limitations
 Documented here deliberately, rather than only implied by silence.
 
-- **Road-sign detector's training domain.** Fine-tuned on Roboflow-100's
-  `road-signs-6ih4y` dataset, whose actual sign designs/text are
-  Indonesian. It has not been validated against signage from other
-  regions — expect degraded accuracy on road signs that look visually
-  different from that training set, not a guarantee of general
-  road-sign detection worldwide.
+- **Road-sign detector's training domain.** An earlier version of
+  `signs_best.pt` was fine-tuned on Roboflow-100's `road-signs-6ih4y`
+  dataset, whose actual sign designs/text are Indonesian — confirmed
+  directly: it produced zero candidate detections, even at near-zero
+  confidence, on a real dashcam frame with a clearly visible
+  Vienna-Convention-style warning sign. It has since been retrained on
+  a different, Indian-context dataset (`indian-traffic-signs1`, 70
+  classes) and spot-checked against that same failing frame, where it
+  now correctly detects the sign — but this is a spot check, not a
+  formal evaluation, and a 70-class single-source dataset will still
+  have gaps (occluded signs, unusual angles, designs not covered).
+  Treat the sign-detection toggle as a useful aid, not a certified
+  detector.
 - **Main detector's night-time false positives.** The stock
   COCO-trained YOLOv8 model (never trained on labeled street lamps)
   can still misclassify a bright point light source as a Traffic
