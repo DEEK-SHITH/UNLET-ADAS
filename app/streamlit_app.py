@@ -1686,6 +1686,27 @@ with tab_live:
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration={"iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]}]},
+                # streamlit-webrtc's own generic labels ("SELECT
+                # DEVICE", "START"/"STOP") default in unless overridden
+                # here — there's no microphone in this app (audio is
+                # off below), so wording is specific to the camera
+                # rather than the library's generic audio+video phrasing.
+                translations={
+                    'start': 'Start Camera',
+                    'stop': 'Stop Camera',
+                    'select_device': 'Choose Camera',
+                    'select_camera': 'Camera',
+                    'media_api_not_available':
+                        'This browser does not support camera access — '
+                        'try Chrome, Edge, or Firefox instead.',
+                    'device_ask_permission':
+                        'Click "Allow" when your browser asks for camera '
+                        'permission.',
+                    'device_not_available': 'No camera was found on this device.',
+                    'device_access_denied':
+                        'Camera access was denied. Check this site\'s camera '
+                        'permission in your browser settings, then reload.',
+                },
                 media_stream_constraints={
                     # Without an explicit resolution request, browsers
                     # often default to a low capture size (e.g.
