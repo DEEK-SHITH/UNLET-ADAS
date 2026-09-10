@@ -197,7 +197,7 @@ def test_does_not_leave_a_stale_dest_dir_from_a_previous_run(
         os.path.join(str(dest_dir), 'leftover_from_failed_run.txt'))
 
 
-def test_signs_download_defaults_to_roboflow_100(tmp_path, monkeypatch):
+def test_signs_download_defaults_to_indian_traffic_signs(tmp_path, monkeypatch):
     # The default dataset should keep working unchanged for anyone not
     # overriding it.
     src_dir = _dataset_dir(tmp_path, 'src')
@@ -206,27 +206,27 @@ def test_signs_download_defaults_to_roboflow_100(tmp_path, monkeypatch):
 
     train_signs.download_dataset('fake-key', dest_dir)
 
-    assert fake_rf.requested_workspaces == ['roboflow-100']
-    assert fake_rf.requested_projects == ['road-signs-6ih4y']
+    assert fake_rf.requested_workspaces == ['indiantrafficsigns']
+    assert fake_rf.requested_projects == ['indian-traffic-signs1']
     assert project.requested_versions == [2]
 
 
 def test_signs_download_honors_a_custom_dataset(tmp_path, monkeypatch):
-    # Regression test for a real limitation found in practice: the
-    # default dataset's class list (Indonesian road signs) produced
-    # zero detections on a Vienna-Convention-style sign, even at
-    # near-zero confidence -- download_dataset() must be able to point
-    # at a different, region-specific Roboflow project instead of
-    # being hardcoded to the one default forever.
+    # Regression test for a real limitation found in practice: an
+    # earlier default dataset's class list (Indonesian road signs)
+    # produced zero detections on a Vienna-Convention-style sign, even
+    # at near-zero confidence -- download_dataset() must be able to
+    # point at a different, region-specific Roboflow project instead
+    # of being hardcoded to one default forever.
     src_dir = _dataset_dir(tmp_path, 'src')
     dest_dir = str(tmp_path / 'dest')
     _, fake_rf, project = _patch_download(train_signs, monkeypatch, [src_dir])
 
     train_signs.download_dataset(
         'fake-key', dest_dir,
-        workspace='indiantrafficsigns', project_slug='indian-traffic-signs1',
+        workspace='roboflow-100', project_slug='road-signs-6ih4y',
         version_num=1)
 
-    assert fake_rf.requested_workspaces == ['indiantrafficsigns']
-    assert fake_rf.requested_projects == ['indian-traffic-signs1']
+    assert fake_rf.requested_workspaces == ['roboflow-100']
+    assert fake_rf.requested_projects == ['road-signs-6ih4y']
     assert project.requested_versions == [1]

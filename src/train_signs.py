@@ -9,19 +9,25 @@ situation as the pothole detector (src/train_pothole.py) — this can't
 be added by just flipping a flag on the existing detector; it needs its
 own model trained on a labeled road-sign dataset.
 
-Dataset: defaults to Roboflow-100's "road-signs-6ih4y" project
-(https://universe.roboflow.com/roboflow-100/road-signs-6ih4y), but
+Dataset: defaults to Roboflow's "indian-traffic-signs1" project
+(https://universe.roboflow.com/indiantrafficsigns/indian-traffic-signs1,
+~70 Indian-context sign classes, ~7.7k images), but
 --roboflow_workspace/--roboflow_project/--roboflow_version point this
-at any Roboflow road-sign project instead -- the default dataset's
-class list turned out to be a real-world, Indonesian-language sign
-taxonomy, which does not generalize to other regions' sign designs
-(confirmed directly: the trained detector produced zero candidate
-detections, even at near-zero confidence, on a Vienna-Convention-style
-warning sign). train() reads the actual class list back from the
-downloaded data.yaml rather than assuming one regardless of which
-project is used, and the app's sign-drawing code (src/signs.py)
-assigns colors by hashing the class name for the same reason — see
-those files for details.
+at any Roboflow road-sign project instead. An earlier default,
+Roboflow-100's "road-signs-6ih4y", turned out to be a real-world,
+Indonesian-language sign taxonomy that does not generalize to Indian/
+Vienna-Convention-style sign designs (confirmed directly: the detector
+it produced had zero candidate detections, even at near-zero
+confidence, on a real dashcam frame with a clearly visible warning
+sign). The current default's exact workspace/project/version were
+found via web search rather than opened directly on Universe — verify
+them (and the class list) against that project's own "Download
+Dataset -> YOLOv8" snippet before relying on them for a real training
+run. train() reads the actual class list back from the downloaded
+data.yaml rather than assuming one regardless of which project is
+used, and the app's sign-drawing code (src/signs.py) assigns colors by
+hashing the class name for the same reason — see those files for
+details.
 
 Usage:
     pip install roboflow ultralytics
@@ -60,14 +66,14 @@ sys.path.insert(0, ROOT)
 
 
 def download_dataset(api_key, dest_dir, retries=5,
-                      workspace='roboflow-100', project_slug='road-signs-6ih4y',
+                      workspace='indiantrafficsigns', project_slug='indian-traffic-signs1',
                       version_num=2):
     """
     Download a Roboflow road-sign dataset in YOLOv8 format. Defaults to
-    Roboflow-100's "road-signs-6ih4y" project, but any Roboflow project
-    can be used instead by passing workspace/project_slug/version_num
-    (see the --roboflow_workspace/--roboflow_project/--roboflow_version
-    CLI args) -- this dataset's own class list turned out not to match
+    the "indian-traffic-signs1" project, but any Roboflow project can
+    be used instead by passing workspace/project_slug/version_num (see
+    the --roboflow_workspace/--roboflow_project/--roboflow_version CLI
+    args) -- an earlier default's class list turned out not to match
     every use case (see the module docstring's history), so the script
     no longer hardcodes a single project.
     """
@@ -239,15 +245,15 @@ def parse_args():
     p.add_argument('--data_yaml', default=None,
                    help='Path to an already-downloaded dataset\'s '
                         'data.yaml (skips the Roboflow download).')
-    p.add_argument('--roboflow_workspace', default='roboflow-100',
+    p.add_argument('--roboflow_workspace', default='indiantrafficsigns',
                    help='Roboflow workspace slug. Defaults to the '
-                        'roboflow-100 benchmark account; override to '
-                        'train on a different road-sign dataset '
-                        '(e.g. a region-specific one) without editing '
-                        'this file -- copy the exact workspace/project '
-                        '/version from that project\'s "Show download '
-                        'code" snippet on Universe.')
-    p.add_argument('--roboflow_project', default='road-signs-6ih4y',
+                        'indiantrafficsigns account (found via web '
+                        'search -- verify it against that project\'s '
+                        'own "Show download code" snippet on Universe '
+                        'before relying on it); override to train on a '
+                        'different road-sign dataset without editing '
+                        'this file.')
+    p.add_argument('--roboflow_project', default='indian-traffic-signs1',
                    help='Roboflow project slug (see --roboflow_workspace).')
     p.add_argument('--roboflow_version', type=int, default=2,
                    help='Roboflow dataset version number (see '
