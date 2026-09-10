@@ -1880,16 +1880,19 @@ Enhanced Output + Lanes + Detections + Risk
 ### Known Limitations
 Documented here deliberately, rather than only implied by silence.
 
-- **Road-sign detector's training domain.** The `signs_best.pt`
-  weights currently shipped were fine-tuned on Roboflow-100's
-  `road-signs-6ih4y` dataset, whose actual sign designs/text are
-  Indonesian — confirmed directly: it produces zero candidate
-  detections, even at near-zero confidence, on a real dashcam frame
-  with a clearly visible Vienna-Convention-style warning sign.
-  `src/train_signs.py` now defaults to a different, Indian-context
-  dataset instead, but the shipped weights have not yet been
-  retrained against it — expect degraded accuracy on Indian/
-  Vienna-Convention signage until that retrain happens.
+- **Road-sign detector's training domain.** An earlier version of
+  `signs_best.pt` was fine-tuned on Roboflow-100's `road-signs-6ih4y`
+  dataset, whose actual sign designs/text are Indonesian — confirmed
+  directly: it produced zero candidate detections, even at near-zero
+  confidence, on a real dashcam frame with a clearly visible
+  Vienna-Convention-style warning sign. It has since been retrained on
+  a different, Indian-context dataset (`indian-traffic-signs1`, 70
+  classes) and spot-checked against that same failing frame, where it
+  now correctly detects the sign — but this is a spot check, not a
+  formal evaluation, and a 70-class single-source dataset will still
+  have gaps (occluded signs, unusual angles, designs not covered).
+  Treat the sign-detection toggle as a useful aid, not a certified
+  detector.
 - **Main detector's night-time false positives.** The stock
   COCO-trained YOLOv8 model (never trained on labeled street lamps)
   can still misclassify a bright point light source as a Traffic
