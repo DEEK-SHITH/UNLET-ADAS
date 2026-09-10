@@ -478,18 +478,22 @@ Loss = 50.0 × ColorConstancy
 
 Documented here deliberately, rather than only implied by silence.
 
-- **Road-sign detector's training domain.** The `signs_best.pt`
-  weights currently shipped in `app/` were fine-tuned on Roboflow-100's
+- **Road-sign detector's training domain.** An earlier version of the
+  shipped `signs_best.pt` was fine-tuned on Roboflow-100's
   `road-signs-6ih4y` dataset, whose actual sign designs/text are
-  Indonesian — confirmed directly: it produces zero candidate
+  Indonesian — confirmed directly: it produced zero candidate
   detections, even at near-zero confidence, on a real dashcam frame
   with a clearly visible Vienna-Convention-style warning sign.
-  `src/train_signs.py` now defaults to a different, Indian-context
-  dataset instead (`indiantrafficsigns/indian-traffic-signs1`), but
-  the shipped weights have not yet been retrained against it — until
-  that retrain happens and `app/signs_best.pt` is replaced, expect the
-  sign-detection toggle to under-perform on Indian/Vienna-Convention
-  signage specifically.
+  `signs_best.pt` has since been retrained on a different,
+  Indian-context dataset (`indiantrafficsigns/indian-traffic-signs1`,
+  70 classes) and spot-checked against that same failing frame, where
+  it now correctly detects the sign (`left_hand_curve`, 0.75
+  confidence) — but this is a spot check, not a formal evaluation:
+  no mAP/precision/recall figures for this specific training run are
+  published here, and a 70-class, single-source dataset will still
+  have gaps (occluded signs, unusual angles, sign designs not covered
+  by this project). Treat the sign-detection toggle as a useful aid,
+  not a certified detector.
 - **Main detector's night-time false positives.** The stock
   COCO-trained YOLOv8 model (never trained on labeled street lamps)
   can misclassify a bright point light source — a street lamp, a
