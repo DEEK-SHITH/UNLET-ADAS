@@ -51,28 +51,35 @@ class _FakeVersion:
 class _FakeProject:
     def __init__(self, version):
         self._version = version
+        self.requested_versions = []
 
     def version(self, n):
+        self.requested_versions.append(n)
         return self._version
 
 
 class _FakeRoboflow:
     """Stands in for roboflow.Roboflow: Roboflow(api_key=...) then
-    .workspace(...).project(...).version(...) -- this fake ignores the
-    workspace/project names and just hands back the same fake project
-    either way, since download_dataset()'s own project/workspace names
-    aren't what's under test here."""
+    .workspace(...).project(...).version(...). Records the
+    workspace/project names it was called with, so tests can confirm
+    a custom --roboflow_workspace/--roboflow_project/--roboflow_version
+    actually reaches the SDK call, not just the default -- otherwise
+    this always hands back the same fake project regardless of name."""
 
     def __init__(self, project):
         self._project = project
+        self.requested_workspaces = []
+        self.requested_projects = []
 
     def __call__(self, api_key):
         return self
 
     def workspace(self, name):
+        self.requested_workspaces.append(name)
         return self
 
     def project(self, name):
+        self.requested_projects.append(name)
         return self._project
 
 
@@ -96,16 +103,18 @@ def _dataset_dir(tmp_path, name, names_yaml='names: [a, b]\n'):
 
 def _patch_download(module, monkeypatch, outcomes):
     version = _FakeVersion(outcomes)
+    project = _FakeProject(version)
+    fake_rf = _FakeRoboflow(project)
     fake_roboflow_module = types.ModuleType('roboflow')
-    fake_roboflow_module.Roboflow = _FakeRoboflow(_FakeProject(version))
+    fake_roboflow_module.Roboflow = fake_rf
     monkeypatch.setitem(sys.modules, 'roboflow', fake_roboflow_module)
-    return version
+    return version, fake_rf, project
 
 
 def test_succeeds_on_first_try(module, tmp_path, monkeypatch):
     src_dir = _dataset_dir(tmp_path, 'src')
     dest_dir = str(tmp_path / 'dest')
-    version = _patch_download(module, monkeypatch, [src_dir])
+    version, _, _ = _patch_download(module, monkeypatch, [src_dir])
 
     result = module.download_dataset('fake-key', dest_dir)
 
@@ -117,7 +126,7 @@ def test_succeeds_on_first_try(module, tmp_path, monkeypatch):
 def test_retries_past_an_exception(module, tmp_path, monkeypatch):
     src_dir = _dataset_dir(tmp_path, 'src')
     dest_dir = str(tmp_path / 'dest')
-    version = _patch_download(module, monkeypatch, ['raise', src_dir])
+    version, _, _ = _patch_download(module, monkeypatch, ['raise', src_dir])
 
     result = module.download_dataset('fake-key', dest_dir, retries=3)
 
@@ -132,7 +141,7 @@ def test_retries_past_a_silent_empty_download(module, tmp_path, monkeypatch):
     # retried, not treated as a final failure.
     src_dir = _dataset_dir(tmp_path, 'src')
     dest_dir = str(tmp_path / 'dest')
-    version = _patch_download(module, monkeypatch, ['empty', src_dir])
+    version, _, _ = _patch_download(module, monkeypatch, ['empty', src_dir])
 
     result = module.download_dataset('fake-key', dest_dir, retries=3)
 
@@ -186,3 +195,38 @@ def test_does_not_leave_a_stale_dest_dir_from_a_previous_run(
     assert os.path.exists(os.path.join(str(dest_dir), 'data.yaml'))
     assert not os.path.exists(
         os.path.join(str(dest_dir), 'leftover_from_failed_run.txt'))
+
+
+def test_signs_download_defaults_to_roboflow_100(tmp_path, monkeypatch):
+    # The default dataset should keep working unchanged for anyone not
+    # overriding it.
+    src_dir = _dataset_dir(tmp_path, 'src')
+    dest_dir = str(tmp_path / 'dest')
+    _, fake_rf, project = _patch_download(train_signs, monkeypatch, [src_dir])
+
+    train_signs.download_dataset('fake-key', dest_dir)
+
+    assert fake_rf.requested_workspaces == ['roboflow-100']
+    assert fake_rf.requested_projects == ['road-signs-6ih4y']
+    assert project.requested_versions == [2]
+
+
+def test_signs_download_honors_a_custom_dataset(tmp_path, monkeypatch):
+    # Regression test for a real limitation found in practice: the
+    # default dataset's class list (Indonesian road signs) produced
+    # zero detections on a Vienna-Convention-style sign, even at
+    # near-zero confidence -- download_dataset() must be able to point
+    # at a different, region-specific Roboflow project instead of
+    # being hardcoded to the one default forever.
+    src_dir = _dataset_dir(tmp_path, 'src')
+    dest_dir = str(tmp_path / 'dest')
+    _, fake_rf, project = _patch_download(train_signs, monkeypatch, [src_dir])
+
+    train_signs.download_dataset(
+        'fake-key', dest_dir,
+        workspace='indiantrafficsigns', project_slug='indian-traffic-signs1',
+        version_num=1)
+
+    assert fake_rf.requested_workspaces == ['indiantrafficsigns']
+    assert fake_rf.requested_projects == ['indian-traffic-signs1']
+    assert project.requested_versions == [1]
