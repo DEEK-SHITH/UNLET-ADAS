@@ -1528,6 +1528,55 @@ with tab_live:
                      "Sharp only if it still feels smooth enough.")
             _live_res = (1280, 720) if 'Sharp' in live_quality else (854, 480)
 
+            # Persists across calls for the life of this WebRTC
+            # connection (the callback closure captures it once; a new
+            # stream — e.g. switching Fast/Sharp, which changes the
+            # widget's key — starts a fresh one). Real measurement on a
+            # CPU-only machine: enhancement + one detector pass takes
+            # ~0.5s/frame run every single frame, which is why the live
+            # feed visibly freezes for ~0.6s at a time instead of
+            # updating smoothly — confirmed by analyzing a screen
+            # recording of the stream (88% of captured frames were
+            # near-identical to the previous one). Stacking pothole
+            # and/or sign detection on top multiplies that cost further.
+            _live_state = {
+                'idx': 0, 'main_dets': [], 'pothole_boxes': [], 'sign_boxes': [],
+            }
+            _DETECT_EVERY_N_FRAMES = 4  # matches the Video tab's fast mode
+
+            def _redraw_main_dets(img_rgb, det_list):
+                # A small, local redraw helper rather than reusing the
+                # Video tab's redraw_cached_detections: that function
+                # expects a 'label' key, which track_and_draw's det_list
+                # provides but detect_and_draw's (used here, since this
+                # is single-frame-per-callback with no cross-frame
+                # tracking) does not -- only 'name'/'conf'/'box'/'risk'.
+                if not det_list:
+                    return img_rgb
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                for d in det_list:
+                    x1, y1, x2, y2 = d['box']
+                    _draw_detection(
+                        img_bgr, x1, y1, x2, y2,
+                        f"{d['name']} · {d['risk']}", d['risk'])
+                return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+            def _draw_pothole_boxes(img_rgb, boxes):
+                for x1, y1, x2, y2, pconf in boxes:
+                    cv2.rectangle(img_rgb, (x1, y1), (x2, y2), (255, 165, 0), 2)
+                    cv2.putText(
+                        img_rgb, f'Pothole {pconf:.0%}', (x1, max(y1 - 8, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+
+            def _draw_sign_boxes(img_rgb, boxes):
+                for x1, y1, x2, y2, sconf, cls_name in boxes:
+                    digest = hashlib.md5(str(cls_name).encode('utf-8')).digest()
+                    color = _SIGN_PALETTE_RGB[digest[0] % len(_SIGN_PALETTE_RGB)]
+                    cv2.rectangle(img_rgb, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(
+                        img_rgb, f'{cls_name} {sconf:.0%}', (x1, max(y1 - 8, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
             def _live_video_frame_callback(frame):
                 img_bgr = frame.to_ndarray(format="bgr24")
                 rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -1536,9 +1585,15 @@ with tab_live:
                 # pipeline that runs the network's conv layers every
                 # frame — keeping it small here is what actually saves
                 # time, independent of the capture resolution above.
+                # Enhancement itself runs every frame (it's the cheaper
+                # of the two costs below) so the video always looks
+                # live; only the detector passes are throttled.
                 enh_rgb = np.array(enhance_pil(
                     model, DEVICE, Image.fromarray(rgb),
                     adaptive=adaptive_mode, proxy_size=128))
+
+                _live_state['idx'] += 1
+                run_heavy = (_live_state['idx'] % _DETECT_EVERY_N_FRAMES == 0)
 
                 live_conf = None
                 if live_stream_detect or live_stream_pothole or live_stream_signs:
@@ -1556,10 +1611,23 @@ with tab_live:
                 # fallback (depth_map=None).
                 live_imgsz = min(det_imgsz, 320)
 
+                # Each enabled detector below runs only on 1 of every
+                # _DETECT_EVERY_N_FRAMES frames — a fresh YOLO pass on
+                # every single frame is what caused the ~0.6s freezes.
+                # On the frames a detector is skipped, its last-known
+                # boxes are redrawn on the current (still freshly
+                # enhanced) frame instead, so the video keeps moving
+                # smoothly with only the box positions lagging slightly
+                # behind — the same trade-off the Video tab's "faster
+                # processing" mode already makes for batch video.
                 if live_stream_detect and has_yolo:
-                    enh_rgb, _, _, _ = detect_and_draw(
-                        yolo, enh_rgb, conf=live_conf,
-                        imgsz=live_imgsz, class_map=det_class_map)
+                    if run_heavy or not _live_state['main_dets']:
+                        enh_rgb, _live_state['main_dets'], _, _ = detect_and_draw(
+                            yolo, enh_rgb, conf=live_conf,
+                            imgsz=live_imgsz, class_map=det_class_map)
+                    else:
+                        enh_rgb = _redraw_main_dets(
+                            enh_rgb, _live_state['main_dets'])
 
                 # Pothole/sign detection here mirror the Live Snapshot
                 # tab's drawing (src.signs.draw_sign_detections and the
@@ -1570,36 +1638,25 @@ with tab_live:
                 # and every extra conversion costs time. Colors are
                 # RGB-ordered here, not BGR.
                 if live_stream_pothole and has_pothole:
-                    pot_res = pothole_yolo(
-                        enh_rgb, conf=live_conf, imgsz=live_imgsz,
-                        verbose=False)[0]
-                    for box in pot_res.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        pconf = float(box.conf[0])
-                        cv2.rectangle(
-                            enh_rgb, (x1, y1), (x2, y2), (255, 165, 0), 2)
-                        cv2.putText(
-                            enh_rgb, f'Pothole {pconf:.0%}',
-                            (x1, max(y1 - 8, 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+                    if run_heavy or not _live_state['pothole_boxes']:
+                        pot_res = pothole_yolo(
+                            enh_rgb, conf=live_conf, imgsz=live_imgsz,
+                            verbose=False)[0]
+                        _live_state['pothole_boxes'] = [
+                            (*map(int, box.xyxy[0]), float(box.conf[0]))
+                            for box in pot_res.boxes]
+                    _draw_pothole_boxes(enh_rgb, _live_state['pothole_boxes'])
 
                 if live_stream_signs and has_signs:
-                    sign_res = sign_yolo(
-                        enh_rgb, conf=live_conf, imgsz=live_imgsz,
-                        verbose=False)[0]
-                    for box in sign_res.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        sconf = float(box.conf[0])
-                        cls_name = sign_res.names[int(box.cls[0])]
-                        digest = hashlib.md5(
-                            str(cls_name).encode('utf-8')).digest()
-                        color = _SIGN_PALETTE_RGB[
-                            digest[0] % len(_SIGN_PALETTE_RGB)]
-                        cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(
-                            enh_rgb, f'{cls_name} {sconf:.0%}',
-                            (x1, max(y1 - 8, 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                    if run_heavy or not _live_state['sign_boxes']:
+                        sign_res = sign_yolo(
+                            enh_rgb, conf=live_conf, imgsz=live_imgsz,
+                            verbose=False)[0]
+                        _live_state['sign_boxes'] = [
+                            (*map(int, box.xyxy[0]), float(box.conf[0]),
+                             sign_res.names[int(box.cls[0])])
+                            for box in sign_res.boxes]
+                    _draw_sign_boxes(enh_rgb, _live_state['sign_boxes'])
 
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 orig_labeled = img_bgr.copy()
