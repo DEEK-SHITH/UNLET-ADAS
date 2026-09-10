@@ -1528,20 +1528,28 @@ with tab_live:
                      "Sharp only if it still feels smooth enough.")
             _live_res = (1280, 720) if 'Sharp' in live_quality else (854, 480)
 
-            # Persists across calls for the life of this WebRTC
-            # connection (the callback closure captures it once; a new
-            # stream — e.g. switching Fast/Sharp, which changes the
-            # widget's key — starts a fresh one). Real measurement on a
-            # CPU-only machine: enhancement + one detector pass takes
-            # ~0.5s/frame run every single frame, which is why the live
-            # feed visibly freezes for ~0.6s at a time instead of
-            # updating smoothly — confirmed by analyzing a screen
-            # recording of the stream (88% of captured frames were
-            # near-identical to the previous one). Stacking pothole
-            # and/or sign detection on top multiplies that cost further.
-            _live_state = {
-                'idx': 0, 'main_dets': [], 'pothole_boxes': [], 'sign_boxes': [],
-            }
+            # Must live in st.session_state, NOT a plain local variable:
+            # streamlit-webrtc reruns the whole Streamlit script
+            # frequently on its own (to sync its playing-state UI)
+            # while a stream is active, independent of any user
+            # interaction. A local dict here gets recreated fresh on
+            # every one of those reruns, silently defeating the
+            # frame-skip below entirely -- confirmed in practice: the
+            # first version of this fix (a local dict) measured WORSE
+            # on a real recording (95% frozen frames, 1.0s freezes)
+            # than before throttling was added at all (88%, 0.6s),
+            # because most frames were hitting the "no cached boxes
+            # yet" fallback and running heavy every time. session_state
+            # survives reruns, so the counter actually persists. Keyed
+            # by live_quality so switching Fast/Sharp (a new stream)
+            # starts a fresh one rather than reusing stale boxes sized
+            # for the old resolution.
+            _state_key = f'_live_state_{live_quality}'
+            if _state_key not in st.session_state:
+                st.session_state[_state_key] = {
+                    'idx': 0, 'main_dets': [], 'pothole_boxes': [], 'sign_boxes': [],
+                }
+            _live_state = st.session_state[_state_key]
             _DETECT_EVERY_N_FRAMES = 4  # matches the Video tab's fast mode
 
             def _redraw_main_dets(img_rgb, det_list):

@@ -521,6 +521,16 @@ Documented here deliberately, rather than only implied by silence.
   tab's "faster processing" mode already makes), while enhancement
   keeps running every frame so the picture itself never freezes. Box
   positions can lag slightly behind a fast-moving subject as a result.
+  This throttling state has to live in `st.session_state`, not a
+  plain local variable: `streamlit-webrtc` reruns the whole Streamlit
+  script on its own while a stream is active (confirmed directly in
+  its source — it calls `st.rerun()` as part of its own connection
+  lifecycle, and keeps its own state in `st.session_state` for the
+  same reason), which would otherwise recreate the frame counter from
+  scratch on every rerun and silently defeat the throttling — an
+  actual regression measured on a second recording (95% frozen, 1.0s
+  freezes — worse than before throttling existed) before this was
+  caught and fixed.
 - **Dashboard auto-detection is a heuristic, not a guarantee.**
   `estimate_dashboard_cutoff` tells a static dashboard/steering wheel
   apart from a moving road using pixel variance across a handful of
