@@ -512,6 +512,15 @@ Documented here deliberately, rather than only implied by silence.
   a reduced resolution (`min(det_imgsz, 320)`) and skips the MiDaS
   depth pass entirely, unlike the Image/Video tabs — a deliberate
   trade-off to keep the stream from stalling on CPU, not an oversight.
+  On a CPU-only machine, running a full detector pass on every single
+  frame still visibly froze the stream for roughly half a second at a
+  time (confirmed by analyzing a screen recording: 88% of captured
+  frames were near-identical to the previous one) — each enabled
+  detector now only runs fresh on 1 of every 4 frames, redrawing its
+  last-known boxes on the frames in between (same trade-off the Video
+  tab's "faster processing" mode already makes), while enhancement
+  keeps running every frame so the picture itself never freezes. Box
+  positions can lag slightly behind a fast-moving subject as a result.
 - **Dashboard auto-detection is a heuristic, not a guarantee.**
   `estimate_dashboard_cutoff` tells a static dashboard/steering wheel
   apart from a moving road using pixel variance across a handful of
