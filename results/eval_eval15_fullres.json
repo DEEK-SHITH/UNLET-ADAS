@@ -1,0 +1,30 @@
+{
+  "split": "eval15",
+  "mode": "fullres",
+  "proxy": 256,
+  "weights": "app/zerodce_cbam_best.pt",
+  "device": "cpu",
+  "results": {
+    "Dark input": {
+      "psnr_mean": 7.773327812696982,
+      "psnr_std": 2.5284086311696363,
+      "ssim_mean": 0.19140443205833435,
+      "ssim_std": 0.09180092066526413,
+      "n": 15
+    },
+    "AutoContrast": {
+      "psnr_mean": 11.241567341332065,
+      "psnr_std": 4.288521045710878,
+      "ssim_mean": 0.37959811091423035,
+      "ssim_std": 0.16732659935951233,
+      "n": 15
+    },
+    "UNLET-ADAS": {
+      "psnr_mean": 18.49162342290822,
+      "psnr_std": 4.221202258327872,
+      "ssim_mean": 0.5794001817703247,
+      "ssim_std": 0.11316588521003723,
+      "n": 15
+    }
+  }
+}
