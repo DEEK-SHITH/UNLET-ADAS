@@ -196,7 +196,8 @@ def train(args):
         shuffle=False, num_workers=2, pin_memory=True)
 
     # Model
-    model     = build_model().to(DEVICE)
+    model     = build_model(
+        use_cbam=not getattr(args, 'no_cbam', False)).to(DEVICE)
     criterion = UNLETLoss(device=str(DEVICE)).to(DEVICE)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=1e-5)
@@ -350,6 +351,9 @@ def parse_args():
                         'src/prepare_extra_lowlight.py.')
     p.add_argument('--save_dir',
                    default='./checkpoints')
+    p.add_argument('--no_cbam', action='store_true',
+                   help='Ablation: replace all seven CBAM modules '
+                        'with identity (21,769 -> 19,291 params).')
     p.add_argument('--resume', action='store_true',
                    help='Resume from resume_state.pt in --save_dir '
                         '(saved after every epoch) instead of '

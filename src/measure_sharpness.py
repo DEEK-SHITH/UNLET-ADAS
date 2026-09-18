@@ -43,9 +43,18 @@ def laplacian_variance(rgb_uint8):
 
 
 def load_model(weights, device):
-    model = ZeroDCECBAM(num_iters=8, channels=32).to(device)
     ckpt = torch.load(weights, map_location=device, weights_only=False)
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
+    # Older checkpoints named the output layer 'out'.
+    if any(k.startswith('out.') for k in state):
+        state = {('curve_out.' + k[4:] if k.startswith('out.') else k): v
+                 for k, v in state.items()}
+    # A no-CBAM ablation checkpoint has no cb*.* keys; match it.
+    use_cbam = any(k.startswith('cb1.') for k in state)
+    if not use_cbam:
+        print('  [ablation checkpoint: CBAM disabled]')
+    model = ZeroDCECBAM(num_iters=8, channels=32,
+                        use_cbam=use_cbam).to(device)
     model.load_state_dict(state)
     model.eval()
     return model

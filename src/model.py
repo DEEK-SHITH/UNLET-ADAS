@@ -78,27 +78,32 @@ class ZeroDCECBAM(nn.Module):
 
     This is applied iteratively for progressive enhancement.
     """
-    def __init__(self, num_iters=8, channels=32):
+    def __init__(self, num_iters=8, channels=32, use_cbam=True):
         super().__init__()
         self.num_iters = num_iters
+        self.use_cbam = use_cbam
+        # Ablation: with use_cbam=False every attention module
+        # becomes an identity, removing 2,478 parameters.
+        def attn(c):
+            return CBAM(c) if use_cbam else nn.Identity()
 
         # Encoder
         self.e1  = dw_block(3,           channels)
-        self.cb1 = CBAM(channels)
+        self.cb1 = attn(channels)
         self.e2  = dw_block(channels,    channels)
-        self.cb2 = CBAM(channels)
+        self.cb2 = attn(channels)
         self.e3  = dw_block(channels,    channels)
-        self.cb3 = CBAM(channels)
+        self.cb3 = attn(channels)
         self.e4  = dw_block(channels,    channels)
-        self.cb4 = CBAM(channels)
+        self.cb4 = attn(channels)
 
         # Decoder with skip connections
         self.d3  = dw_block(channels * 2, channels)
-        self.cb5 = CBAM(channels)
+        self.cb5 = attn(channels)
         self.d2  = dw_block(channels * 2, channels)
-        self.cb6 = CBAM(channels)
+        self.cb6 = attn(channels)
         self.d1  = dw_block(channels * 2, channels)
-        self.cb7 = CBAM(channels)
+        self.cb7 = attn(channels)
 
         # Curve parameter output
         self.curve_out = nn.Sequential(
@@ -156,13 +161,15 @@ class ZeroDCECBAM(nn.Module):
         return self.apply_curves(x_full, curves_full), curves_full
 
 
-def build_model(num_iters=8, channels=32):
+def build_model(num_iters=8, channels=32, use_cbam=True):
     """Build and return the UNLET-ADAS enhancement model."""
-    model  = ZeroDCECBAM(num_iters=num_iters, channels=channels)
+    model  = ZeroDCECBAM(num_iters=num_iters, channels=channels,
+                         use_cbam=use_cbam)
     params = sum(p.numel() for p in model.parameters())
     print(f'UNLET-ADAS model built')
     print(f'Parameters : {params:,}')
     print(f'Iterations : {num_iters}')
+    print(f'CBAM       : {"on" if use_cbam else "OFF (ablation)"}')
     print(f'Channels   : {channels}')
     return model
 
