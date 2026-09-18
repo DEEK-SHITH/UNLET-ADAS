@@ -1,0 +1,30 @@
+{
+  "split": "eval15",
+  "mode": "fullres",
+  "proxy": 256,
+  "weights": "/content/drive/MyDrive/UNLET_Project/ckpt_nocbam/zerodce_cbam_best.pt",
+  "device": "cuda",
+  "results": {
+    "Dark input": {
+      "psnr_mean": 7.773327812696982,
+      "psnr_std": 2.5284086311696363,
+      "ssim_mean": 0.19140443205833435,
+      "ssim_std": 0.09180092066526413,
+      "n": 15
+    },
+    "AutoContrast": {
+      "psnr_mean": 11.241567341332065,
+      "psnr_std": 4.288521045710878,
+      "ssim_mean": 0.37959811091423035,
+      "ssim_std": 0.16732659935951233,
+      "n": 15
+    },
+    "UNLET-ADAS": {
+      "psnr_mean": 17.61479550521049,
+      "psnr_std": 4.110139536998033,
+      "ssim_mean": 0.5311681628227234,
+      "ssim_std": 0.10803152620792389,
+      "n": 15
+    }
+  }
+}
