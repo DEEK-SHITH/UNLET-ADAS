@@ -419,10 +419,31 @@ UNLET-ADAS/
 │ └── test_*.py # Unit tests for src/ modules
 ├── .github/workflows/
 │ └── test.yml # CI — runs tests/ on every push
+├── web/ # Optional React/Next.js + FastAPI frontend (see web/README.md)
+│ ├── backend/ # FastAPI service wrapping src/enhance.py
+│ └── frontend/ # Next.js + TypeScript + Tailwind UI
 ├── requirements.txt
 ├── requirements-dev.txt # Extra deps for running tests/ (CI only)
 └── README.md
 
+
+---
+
+## 🌐 Web Frontend (React/Next.js + FastAPI)
+
+An additional frontend for the same enhance/detect pipeline, built for
+more control over look and feel than Streamlit allows — the Streamlit
+app above is unaffected and still works exactly as documented. See
+[`web/README.md`](web/README.md) for setup; quick start:
+
+```bash
+# Backend (repo root)
+pip install -r requirements.txt -r web/backend/requirements.txt
+uvicorn web.backend.main:app --reload --port 8000
+
+# Frontend (separate terminal)
+cd web/frontend && npm install && npm run dev   # http://localhost:3000
+```
 
 ---
 
