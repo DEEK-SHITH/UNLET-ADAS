@@ -49,11 +49,18 @@ npm install
 npm run dev       # http://localhost:3000
 ```
 
-Two pages: **Image** (`/`) and **Video** (`/video`), each with its own
-controls panel (adaptive enhancement, detector toggles, confidence/
-resolution sliders) and a live view of the backend's response — a
-drag-to-compare original/enhanced slider for images, a progress bar +
-playable/downloadable result for videos.
+Three pages: **Image** (`/`), **Video** (`/video`), and **Live Camera**
+(`/live`), each with its own controls panel (adaptive enhancement,
+detector toggles, confidence/resolution sliders) and a live view of
+the backend's response — a drag-to-compare original/enhanced slider
+for images and live-camera snapshots, a progress bar + playable/
+downloadable result for videos.
+
+Live Camera uses `getUserMedia()` to preview your browser's camera and
+captures a snapshot on demand (not a continuous stream — full-quality
+enhancement + detection is too slow per-frame on CPU for that, same
+constraint the Streamlit app's Live Stream tab documents), then runs
+it through `/api/enhance/image` like the Image page.
 
 `npm run build && npm run start` for a production build.
 
