@@ -225,6 +225,10 @@ __marimo__/
 
 # web/ — React/Next.js frontend + FastAPI backend (optional, additional
 # front door onto src/enhance.py; does not affect the Streamlit app)
+# (the blanket "lib/" rule above, meant for Python build dirs, would
+# otherwise also swallow web/frontend/lib/ -- un-ignore it explicitly)
+!web/frontend/lib/
+!web/frontend/lib/**
 web/frontend/node_modules/
 web/frontend/.next/
 web/frontend/next-env.d.ts
