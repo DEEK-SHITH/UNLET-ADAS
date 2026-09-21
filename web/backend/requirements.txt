@@ -1,0 +1,13 @@
+# FastAPI backend for the UNLET-ADAS React/Next.js frontend.
+#
+# Deliberately kept separate from the root requirements.txt: this
+# service is an optional, additional front door onto src/enhance.py
+# and does not change anything about the existing Streamlit app or
+# its Hugging Face Space deployment. Install alongside the root
+# requirements (same models/, src/ code is reused, not duplicated):
+#
+#   pip install -r requirements.txt -r web/backend/requirements.txt
+#
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9

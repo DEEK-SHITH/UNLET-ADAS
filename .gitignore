@@ -222,3 +222,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# web/ — React/Next.js frontend + FastAPI backend (optional, additional
+# front door onto src/enhance.py; does not affect the Streamlit app)
+web/frontend/node_modules/
+web/frontend/.next/
+web/frontend/next-env.d.ts
+web/frontend/.env.local
+web/frontend/AGENTS.md
+web/frontend/CLAUDE.md
+web/backend/__pycache__/
