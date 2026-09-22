@@ -1,3 +1,6 @@
+'use client';
+
+import { motion } from 'framer-motion';
 import type { Detection } from '@/lib/api';
 
 const RISK_COLOR: Record<string, string> = {
@@ -21,15 +24,18 @@ export default function DetectionList({
       </div>
       <div className="flex flex-wrap gap-1.5">
         {items.map((d, i) => (
-          <span
-            key={i}
+          <motion.span
+            key={`${d.name}-${i}`}
+            initial={{ opacity: 0, scale: 0.8, y: 4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: Math.min(i * 0.04, 0.3) }}
             className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
               d.risk ? RISK_COLOR[d.risk] : 'border-border bg-card2 text-textMain'
             }`}
           >
             {d.name} · {(d.conf * 100).toFixed(0)}%
             {d.risk ? ` · ${d.risk}` : ''}
-          </span>
+          </motion.span>
         ))}
       </div>
     </div>

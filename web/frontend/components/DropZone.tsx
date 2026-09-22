@@ -36,10 +36,10 @@ export default function DropZone({
         handleFiles(e.dataTransfer.files);
       }}
       onClick={() => inputRef.current?.click()}
-      className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
+      className={`group flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-all duration-200 ${
         dragOver
-          ? 'border-accent bg-accent/5'
-          : 'border-borderLt bg-card hover:border-accent/60'
+          ? 'scale-[1.02] border-accent bg-accent/5 shadow-glow'
+          : 'border-borderLt bg-card hover:scale-[1.01] hover:border-accent/60'
       }`}
     >
       <input
@@ -49,7 +49,11 @@ export default function DropZone({
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
       />
-      <div className="mb-2 text-3xl">📤</div>
+      <div
+        className={`mb-2 text-3xl transition-transform duration-300 ${dragOver ? 'scale-125 float-y' : 'group-hover:scale-110'}`}
+      >
+        📤
+      </div>
       {fileName ? (
         <div className="text-sm font-medium text-accent">{fileName}</div>
       ) : (
