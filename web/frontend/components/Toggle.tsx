@@ -27,12 +27,12 @@ export default function Toggle({
         type="button"
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-          checked ? 'bg-accent-gradient' : 'bg-card2 border border-border'
-        }`}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-all duration-200 ${
+          checked ? 'bg-accent-gradient shadow-glow' : 'bg-card2 border border-border'
+        } ${!disabled ? 'hover:scale-105 active:scale-95' : ''}`}
       >
         <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${
             checked ? 'translate-x-5' : 'translate-x-0.5'
           }`}
         />

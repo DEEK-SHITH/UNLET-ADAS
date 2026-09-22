@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 
 export default function CompareView({
   before,
@@ -22,9 +23,12 @@ export default function CompareView({
   }, []);
 
   return (
-    <div
+    <motion.div
       ref={containerRef}
-      className="relative aspect-video w-full select-none overflow-hidden rounded-xl border border-border bg-black"
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      className="glow-border relative aspect-video w-full select-none overflow-hidden rounded-xl border bg-black"
       onMouseDown={(e) => {
         dragging.current = true;
         updateFromClientX(e.clientX);
@@ -72,6 +76,6 @@ export default function CompareView({
       <span className="absolute right-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-accent">
         Enhanced
       </span>
-    </div>
+    </motion.div>
   );
 }
