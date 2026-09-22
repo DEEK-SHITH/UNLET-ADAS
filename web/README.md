@@ -53,14 +53,17 @@ Three pages: **Image** (`/`), **Video** (`/video`), and **Live Camera**
 (`/live`), each with its own controls panel (adaptive enhancement,
 detector toggles, confidence/resolution sliders) and a live view of
 the backend's response — a drag-to-compare original/enhanced slider
-for images and live-camera snapshots, a progress bar + playable/
-downloadable result for videos.
+for images, a progress bar + playable/downloadable result for videos.
 
-Live Camera uses `getUserMedia()` to preview your browser's camera and
-captures a snapshot on demand (not a continuous stream — full-quality
-enhancement + detection is too slow per-frame on CPU for that, same
-constraint the Streamlit app's Live Stream tab documents), then runs
-it through `/api/enhance/image` like the Image page.
+Live Camera uses `getUserMedia()` for a raw camera preview and a
+self-pacing loop (capture frame → POST `/api/enhance/image` → display
+→ capture next, with no fixed delay) that continuously enhances and
+detects on the live feed side by side with the raw camera, showing a
+rolling FPS counter. Real frame rate is whatever the backend can
+sustain — a few FPS on CPU with detection on, much higher with a CUDA
+GPU — the loop just never queues requests faster than they resolve. A
+single-snapshot button is also available for a one-off capture without
+starting the loop.
 
 `npm run build && npm run start` for a production build.
 
