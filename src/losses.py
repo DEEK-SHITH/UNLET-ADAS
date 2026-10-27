@@ -45,10 +45,22 @@ def exposure_loss(x, target=0.6, patch_size=16):
 
 
 def spatial_consistency_loss(enhanced, original, patch=4):
-    """Preserves spatial structure of the original image."""
-    ep = F.avg_pool2d(enhanced, patch, stride=patch)
-    op = F.avg_pool2d(original, patch, stride=patch)
-    return F.mse_loss(ep, op)
+    """
+    Preserves spatial structure of the original image by comparing
+    directional gradients between neighboring local patches (left,
+    right, up, down) rather than raw patch intensities (Guo et al.,
+    Zero-DCE, CVPR 2020). Comparing raw intensities directly against
+    the dark input would penalize brightening itself.
+    """
+    ep = F.avg_pool2d(enhanced.mean(dim=1, keepdim=True), patch, stride=patch)
+    op = F.avg_pool2d(original.mean(dim=1, keepdim=True), patch, stride=patch)
+    if ep.shape[2] < 2 or ep.shape[3] < 2:
+        return F.mse_loss(ep, op)
+    diff_e_x = ep[:, :, :, 1:] - ep[:, :, :, :-1]
+    diff_o_x = op[:, :, :, 1:] - op[:, :, :, :-1]
+    diff_e_y = ep[:, :, 1:, :] - ep[:, :, :-1, :]
+    diff_o_y = op[:, :, 1:, :] - op[:, :, :-1, :]
+    return 2.0 * F.mse_loss(diff_e_x, diff_o_x) + 2.0 * F.mse_loss(diff_e_y, diff_o_y)
 
 
 def smoothness_loss(curves):

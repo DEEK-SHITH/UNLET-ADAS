@@ -9,11 +9,13 @@ import { motion, animate } from 'framer-motion';
 export default function StatCard({
   label,
   value,
+  sublabel,
   danger,
   icon,
 }: {
   label: string;
   value: string;
+  sublabel?: string;
   danger?: boolean;
   icon?: string;
 }) {
@@ -30,7 +32,7 @@ export default function StatCard({
   useEffect(() => {
     if (numericValue === null) return;
     const controls = animate(prevRef.current, numericValue, {
-      duration: 0.5,
+      duration: 0.55,
       ease: [0.16, 1, 0.3, 1],
       onUpdate: (v) => setDisplay(v),
     });
@@ -42,19 +44,38 @@ export default function StatCard({
   return (
     <motion.div
       layout
+      whileHover={{ y: -2, scale: 1.015 }}
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.3 }}
-      className="glass relative overflow-hidden rounded-xl px-3 py-2.5 text-center"
+      className={`glass group relative overflow-hidden rounded-xl px-3.5 py-3 text-center transition-colors ${
+        danger ? 'border-danger/40 bg-danger/5' : 'hover:border-accent/40'
+      }`}
     >
       <div
-        className={`text-lg font-extrabold tabular-nums ${danger ? 'text-danger' : 'text-accent'}`}
+        className={`absolute inset-x-0 top-0 h-[2px] ${
+          danger
+            ? 'bg-gradient-to-r from-transparent via-danger to-transparent'
+            : 'bg-gradient-to-r from-transparent via-accent/60 to-transparent opacity-70 group-hover:opacity-100'
+        }`}
+      />
+      <div
+        className={`text-xl font-extrabold tracking-tight tabular-nums ${
+          danger ? 'text-danger' : 'text-accent'
+        }`}
       >
-        {icon && <span className="mr-1">{icon}</span>}
+        {icon && <span className="mr-1.5 text-base">{icon}</span>}
         {numericValue !== null ? display.toFixed(decimals) : value}
         {suffix}
       </div>
-      <div className="mt-0.5 text-[11px] text-textDim">{label}</div>
+      <div className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-textDim">
+        {label}
+      </div>
+      {sublabel && (
+        <div className="mt-0.5 text-[10px] font-mono text-textDim/80">
+          {sublabel}
+        </div>
+      )}
     </motion.div>
   );
 }

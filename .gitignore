@@ -236,3 +236,6 @@ web/frontend/.env.local
 web/frontend/AGENTS.md
 web/frontend/CLAUDE.md
 web/backend/__pycache__/
+web/frontend/out/
+web/frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo

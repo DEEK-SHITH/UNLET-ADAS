@@ -12,7 +12,10 @@ import {
   AppConfig,
   ImageOptions,
   ImageResult,
+  LiveOptions,
+  LiveResult,
   enhanceImage,
+  enhanceLiveFrame,
   fetchConfig,
 } from '@/lib/api';
 
@@ -27,20 +30,18 @@ const DEFAULT_OPTS: ImageOptions = {
   use_depth_risk: false,
 };
 
-// Frames captured for the continuous stream are downscaled before
-// upload -- backend enhance+detect time scales with pixel count, so
-// this is the single biggest lever on perceived smoothness/FPS. A
-// one-off snapshot keeps full camera resolution instead.
-const LIVE_CAPTURE_MAX_WIDTH = 768;
-
 export default function LivePage() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [opts, setOpts] = useState<ImageOptions>(DEFAULT_OPTS);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
+  // Real-time speed presets
+  const [liveQualityMode, setLiveQualityMode] = useState<'turbo' | 'balanced' | 'quality'>('turbo');
+  const [interleaved, setInterleaved] = useState<boolean>(true);
+
   const [streaming, setStreaming] = useState(false);
-  const [liveResult, setLiveResult] = useState<ImageResult | null>(null);
+  const [liveResult, setLiveResult] = useState<LiveResult | null>(null);
   const [fps, setFps] = useState<number | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -54,11 +55,21 @@ export default function LivePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const streamingRef = useRef(false);
   const optsRef = useRef(opts);
+  const liveQualityModeRef = useRef(liveQualityMode);
+  const interleavedRef = useRef(interleaved);
   const fpsHistoryRef = useRef<number[]>([]);
 
   useEffect(() => {
     optsRef.current = opts;
   }, [opts]);
+
+  useEffect(() => {
+    liveQualityModeRef.current = liveQualityMode;
+  }, [liveQualityMode]);
+
+  useEffect(() => {
+    interleavedRef.current = interleaved;
+  }, [interleaved]);
 
   useEffect(() => {
     fetchConfig()
@@ -71,25 +82,48 @@ export default function LivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function startCamera() {
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+
+  async function startCamera(targetMode?: 'environment' | 'user') {
     setCameraError(null);
+    const mode = targetMode || facingMode;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false,
-      });
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: mode } },
+          audio: false,
+        });
+      } catch {
+        // Fallback for browsers or devices that reject facingMode constraints
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        await videoRef.current.play().catch(() => {});
       }
       setCameraOn(true);
     } catch (e: any) {
       setCameraError(
         e?.name === 'NotAllowedError'
-          ? 'Camera access was denied. Allow camera permission for this site and try again.'
-          : e?.message || 'Could not access the camera.'
+          ? 'Camera access was denied. Please allow camera permission in your phone/browser settings and reload.'
+          : e?.message || 'Could not access the camera. Make sure you are using an HTTPS link.'
       );
+    }
+  }
+
+  async function flipCamera() {
+    const nextMode = facingMode === 'environment' ? 'user' : 'environment';
+    setFacingMode(nextMode);
+    if (cameraOn) {
+      await startCamera(nextMode);
     }
   }
 
@@ -100,7 +134,7 @@ export default function LivePage() {
     setCameraOn(false);
   }
 
-  async function captureFrameFile(maxWidth?: number): Promise<File | null> {
+  async function captureFrameBlob(maxWidth?: number, quality = 0.8): Promise<Blob | null> {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.videoWidth === 0) return null;
@@ -117,11 +151,15 @@ export default function LivePage() {
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, w, h);
 
-    const blob: Blob | null = await new Promise((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.85)
+    return new Promise((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', quality)
     );
+  }
+
+  async function captureFrameFile(maxWidth?: number): Promise<File | null> {
+    const blob = await captureFrameBlob(maxWidth, 0.9);
     if (!blob) return null;
-    return new File([blob], 'live-frame.jpg', { type: 'image/jpeg' });
+    return new File([blob], 'snapshot.jpg', { type: 'image/jpeg' });
   }
 
   function startLiveStream() {
@@ -139,21 +177,30 @@ export default function LivePage() {
     setStreaming(false);
   }
 
-  // Self-pacing loop: captures a (downscaled) frame, waits for the
-  // backend's enhance+detect response, displays it, then immediately
-  // captures the next one. Real frame rate is whatever the backend can
-  // sustain rather than a fixed interval -- this way it never piles up
-  // requests faster than they can be processed.
+  // Self-pacing high-performance loop: captures a frame tailored to the selected
+  // speed preset, streams directly to the low-latency live backend endpoint,
+  // and updates display with zero frame piling.
   async function liveLoop() {
     while (streamingRef.current) {
-      const file = await captureFrameFile(LIVE_CAPTURE_MAX_WIDTH);
-      if (!file) {
-        await new Promise((r) => setTimeout(r, 100));
+      const qm = liveQualityModeRef.current;
+      const maxW = qm === 'turbo' ? 384 : qm === 'balanced' ? 480 : 640;
+      const blob = await captureFrameBlob(maxW, qm === 'turbo' ? 0.78 : 0.85);
+      if (!blob) {
+        await new Promise((r) => setTimeout(r, 60));
         continue;
       }
       const t0 = performance.now();
       try {
-        const r = await enhanceImage(file, optsRef.current);
+        const liveOpts: LiveOptions = {
+          adaptive: optsRef.current.adaptive,
+          det_conf: optsRef.current.det_conf,
+          det_imgsz: maxW,
+          enable_detect: optsRef.current.enable_detect,
+          enable_lanes: optsRef.current.enable_lanes,
+          interleaved: interleavedRef.current,
+          quality_mode: qm,
+        };
+        const r = await enhanceLiveFrame(blob, liveOpts);
         if (!streamingRef.current) break;
         setLiveResult(r);
         setFrameCount((n) => n + 1);
@@ -164,6 +211,7 @@ export default function LivePage() {
         if (hist.length > 8) hist.shift();
         setFps(hist.reduce((a, b) => a + b, 0) / hist.length);
       } catch (e: any) {
+        if (!streamingRef.current) break;
         setStreamError(e.message || 'Live stream request failed');
         streamingRef.current = false;
         setStreaming(false);
@@ -210,14 +258,27 @@ export default function LivePage() {
             (CPU or GPU) can sustain, shown live below.
           </p>
 
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.97 }}
-            onClick={cameraOn ? stopCamera : startCamera}
-            className="w-full rounded-xl border border-borderLt bg-card px-4 py-2.5 text-sm font-bold text-textMain transition hover:border-accent/60"
-          >
-            {cameraOn ? '📷 Turn Camera Off' : '📷 Turn Camera On'}
-          </motion.button>
+          <div className="flex gap-2">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={cameraOn ? stopCamera : () => startCamera()}
+              className="flex-1 rounded-xl border border-borderLt bg-card px-4 py-2.5 text-sm font-bold text-textMain transition hover:border-accent/60"
+            >
+              {cameraOn ? '📷 Turn Camera Off' : '📷 Turn Camera On'}
+            </motion.button>
+            {cameraOn && (
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={flipCamera}
+                title="Flip between front and back camera"
+                className="rounded-xl border border-borderLt bg-card px-3 py-2.5 text-sm font-bold text-textDim transition hover:text-accent hover:border-accent/60"
+              >
+                🔄 Flip
+              </motion.button>
+            )}
+          </div>
           <AnimatePresence>
             {cameraError && (
               <motion.div
@@ -231,7 +292,57 @@ export default function LivePage() {
             )}
           </AnimatePresence>
 
-          <div className="mt-5 border-t border-border pt-4">
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-textDim">
+                Live Speed Preset
+              </span>
+              <span className="text-[11px] font-semibold text-accent">
+                {liveQualityMode === 'turbo'
+                  ? '⚡ 384p · Max FPS'
+                  : liveQualityMode === 'balanced'
+                  ? '🎯 480p · Balanced'
+                  : '🔬 640p · Studio'}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-border bg-card p-1">
+              <button
+                type="button"
+                onClick={() => setLiveQualityMode('turbo')}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  liveQualityMode === 'turbo'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                ⚡ Turbo
+              </button>
+              <button
+                type="button"
+                onClick={() => setLiveQualityMode('balanced')}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  liveQualityMode === 'balanced'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                🎯 Balanced
+              </button>
+              <button
+                type="button"
+                onClick={() => setLiveQualityMode('quality')}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  liveQualityMode === 'quality'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                🔬 Studio
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 border-t border-border pt-4">
             <div className="mb-2 text-xs font-bold uppercase tracking-wide text-textDim">
               Enhancement
             </div>
@@ -251,6 +362,12 @@ export default function LivePage() {
               checked={opts.enable_detect}
               disabled={config ? !config.has_detect : false}
               onChange={(v) => setOpts({ ...opts, enable_detect: v })}
+            />
+            <Toggle
+              label="Interleaved detection"
+              hint="Alternate-frame detection for 2x higher frame rate"
+              checked={interleaved}
+              onChange={setInterleaved}
             />
             <Toggle
               label="Pothole detection"
@@ -338,6 +455,7 @@ export default function LivePage() {
               <video
                 ref={videoRef}
                 className={`aspect-video w-full bg-black object-contain ${cameraOn ? '' : 'hidden'}`}
+                autoPlay
                 playsInline
                 muted
               />
@@ -398,8 +516,12 @@ export default function LivePage() {
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <StatCard label="Brightness" value={displayResult.brightness.toFixed(3)} />
                   <StatCard
-                    label="Eff. confidence"
-                    value={displayResult.effective_confidence.toFixed(2)}
+                    label={streaming ? "Perception Mode" : "Eff. confidence"}
+                    value={
+                      streaming
+                        ? `${liveQualityMode.toUpperCase()} · ${interleaved ? '2x FPS' : '1x'}`
+                        : ((displayResult as any).effective_confidence ?? opts.det_conf).toFixed(2)
+                    }
                   />
                   <StatCard
                     label="High risk"
@@ -407,15 +529,19 @@ export default function LivePage() {
                     danger={displayResult.high_risk}
                   />
                   <StatCard
-                    label={streaming ? 'Frame time' : 'Processing'}
-                    value={`${(displayResult.processing_ms / 1000).toFixed(1)}s`}
+                    label={streaming ? 'Latency / Speed' : 'Processing'}
+                    value={
+                      streaming && fps
+                        ? `${fps.toFixed(1)} FPS (${displayResult.processing_ms.toFixed(0)}ms)`
+                        : `${(displayResult.processing_ms / 1000).toFixed(1)}s`
+                    }
                   />
                 </div>
 
-                <DetectionList title="Objects" items={displayResult.detections} />
-                <DetectionList title="Potholes" items={displayResult.potholes} />
-                <DetectionList title="Signs" items={displayResult.signs} />
-                {displayResult.lanes_found && (
+                <DetectionList title="Objects" items={displayResult.detections || []} />
+                <DetectionList title="Potholes" items={(displayResult as any).potholes || []} />
+                <DetectionList title="Signs" items={(displayResult as any).signs || []} />
+                {(displayResult as any).lanes_found && (
                   <div className="mt-3 text-xs font-medium text-accent">
                     ✓ Lane boundaries detected and drawn
                   </div>

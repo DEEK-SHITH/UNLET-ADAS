@@ -1,5 +1,25 @@
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export function getApiUrl(): string {
+  const envUrl = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const isRemoteVisitor = host !== 'localhost' && host !== '127.0.0.1';
+    if (isRemoteVisitor) {
+      // If NEXT_PUBLIC_API_URL points to a real public cloud backend, use it;
+      // if it's empty or still pointing to localhost from .env.local, use same-origin ('')
+      if (
+        envUrl &&
+        !envUrl.includes('localhost') &&
+        !envUrl.includes('127.0.0.1')
+      ) {
+        return envUrl;
+      }
+      return '';
+    }
+  }
+  return envUrl || 'http://localhost:8000';
+}
+
+export const API_URL = getApiUrl();
 
 export interface Detection {
   name: string;
@@ -10,6 +30,7 @@ export interface Detection {
 
 export interface ImageResult {
   brightness: number;
+  enhanced_brightness?: number;
   effective_confidence: number;
   detections: Detection[];
   potholes: Detection[];
@@ -60,12 +81,36 @@ export interface VideoOptions {
   det_imgsz: number;
   enable_detect: boolean;
   enable_pothole: boolean;
+  enable_signs: boolean;
   enable_lanes: boolean;
+  use_depth_risk: boolean;
   fast_mode: boolean;
+  quality_preset?: 'turbo' | 'high' | 'ultra';
+}
+
+export interface LiveOptions {
+  adaptive: boolean;
+  det_conf: number;
+  det_imgsz: number;
+  enable_detect: boolean;
+  enable_lanes: boolean;
+  interleaved: boolean;
+  quality_mode: 'turbo' | 'balanced' | 'quality';
+}
+
+export interface LiveResult {
+  brightness: number;
+  enhanced_brightness: number;
+  detections: Detection[];
+  counts: Record<string, number>;
+  high_risk: boolean;
+  processing_ms: number;
+  fps: number;
+  enhanced_image: string;
 }
 
 export async function fetchConfig(): Promise<AppConfig> {
-  const res = await fetch(`${API_URL}/api/config`);
+  const res = await fetch(`${getApiUrl()}/api/config`);
   if (!res.ok) throw new Error('Failed to load backend config');
   return res.json();
 }
@@ -77,13 +122,33 @@ export async function enhanceImage(
   const form = new FormData();
   form.append('file', file);
   Object.entries(opts).forEach(([k, v]) => form.append(k, String(v)));
-  const res = await fetch(`${API_URL}/api/enhance/image`, {
+  const res = await fetch(`${getApiUrl()}/api/enhance/image`, {
     method: 'POST',
     body: form,
   });
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Enhance failed (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
+export async function enhanceLiveFrame(
+  blob: Blob,
+  opts: LiveOptions,
+  signal?: AbortSignal
+): Promise<LiveResult> {
+  const form = new FormData();
+  form.append('file', blob, 'live-frame.jpg');
+  Object.entries(opts).forEach(([k, v]) => form.append(k, String(v)));
+  const res = await fetch(`${getApiUrl()}/api/enhance/live-frame`, {
+    method: 'POST',
+    body: form,
+    signal,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Live frame failed (${res.status}): ${detail}`);
   }
   return res.json();
 }
@@ -95,7 +160,7 @@ export async function submitVideo(
   const form = new FormData();
   form.append('file', file);
   Object.entries(opts).forEach(([k, v]) => form.append(k, String(v)));
-  const res = await fetch(`${API_URL}/api/enhance/video`, {
+  const res = await fetch(`${getApiUrl()}/api/enhance/video`, {
     method: 'POST',
     body: form,
   });
@@ -107,15 +172,17 @@ export async function submitVideo(
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_URL}/api/jobs/${jobId}`, { cache: 'no-store' });
+  const res = await fetch(`${getApiUrl()}/api/jobs/${jobId}`, {
+    cache: 'no-store',
+  });
   if (!res.ok) throw new Error('Failed to fetch job status');
   return res.json();
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
-  await fetch(`${API_URL}/api/jobs/${jobId}/cancel`, { method: 'POST' });
+  await fetch(`${getApiUrl()}/api/jobs/${jobId}/cancel`, { method: 'POST' });
 }
 
 export function jobVideoUrl(jobId: string): string {
-  return `${API_URL}/api/jobs/${jobId}/video`;
+  return `${getApiUrl()}/api/jobs/${jobId}/video`;
 }

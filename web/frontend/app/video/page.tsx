@@ -23,8 +23,11 @@ const DEFAULT_OPTS: VideoOptions = {
   det_imgsz: 640,
   enable_detect: true,
   enable_pothole: false,
+  enable_signs: false,
   enable_lanes: false,
+  use_depth_risk: false,
   fast_mode: true,
+  quality_preset: 'high',
 };
 
 export default function VideoPage() {
@@ -104,8 +107,7 @@ export default function VideoPage() {
             Video Enhancement
           </h2>
           <p className="mb-4 text-sm text-textDim">
-            Upload a night-driving clip. Processed in the background —
-            detection runs every 2nd frame by default for speed.
+            Upload a night-driving clip. Processed in the background with direct-to-FFmpeg H.264 streaming.
           </p>
 
           <DropZone
@@ -116,10 +118,60 @@ export default function VideoPage() {
               setError(null);
             }}
             fileName={file?.name}
-            hint="MP4, MOV, or AVI · capped at 900 frames for this demo API"
+            hint="MP4, MOV, or AVI · single-pass direct stream output"
           />
 
-          <div className="mt-5 border-t border-border pt-4">
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-textDim">
+                Processing Preset
+              </span>
+              <span className="text-[11px] font-semibold text-accent">
+                {opts.quality_preset === 'turbo'
+                  ? '⚡ Turbo Fast'
+                  : opts.quality_preset === 'ultra'
+                  ? '🔬 Studio Master'
+                  : '🎯 Balanced HD'}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-border bg-card p-1">
+              <button
+                type="button"
+                onClick={() => setOpts({ ...opts, quality_preset: 'turbo' })}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  opts.quality_preset === 'turbo'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                ⚡ Turbo
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpts({ ...opts, quality_preset: 'high' })}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  (opts.quality_preset || 'high') === 'high'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                🎯 Balanced
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpts({ ...opts, quality_preset: 'ultra' })}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  opts.quality_preset === 'ultra'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                🔬 Studio
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 border-t border-border pt-4">
             <div className="mb-2 text-xs font-bold uppercase tracking-wide text-textDim">
               Enhancement
             </div>
@@ -154,9 +206,22 @@ export default function VideoPage() {
               onChange={(v) => setOpts({ ...opts, enable_pothole: v })}
             />
             <Toggle
+              label="Road sign detection"
+              hint={config?.has_signs ? undefined : 'Model unavailable'}
+              checked={opts.enable_signs}
+              disabled={config ? !config.has_signs : true}
+              onChange={(v) => setOpts({ ...opts, enable_signs: v })}
+            />
+            <Toggle
               label="Lane detection"
               checked={opts.enable_lanes}
               onChange={(v) => setOpts({ ...opts, enable_lanes: v })}
+            />
+            <Toggle
+              label="Depth-based risk"
+              hint={config?.has_depth ? 'MiDaS proximity' : 'Falls back to box geometry'}
+              checked={opts.use_depth_risk}
+              onChange={(v) => setOpts({ ...opts, use_depth_risk: v })}
             />
           </div>
 

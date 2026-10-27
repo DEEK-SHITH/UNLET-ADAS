@@ -48,7 +48,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # for their caches (model downloads, .streamlit config, etc.).
 RUN useradd -m -u 1000 appuser
 ENV HOME=/home/appuser \
-    PATH=/home/appuser/.local/bin:$PATH
+    PATH=/home/appuser/.local/bin:$PATH \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 WORKDIR /app
 
 COPY --chown=appuser:appuser requirements.txt packages.txt ./

@@ -73,15 +73,35 @@ input[type='range']::-moz-range-thumb {
 
 /* ---------- glass surfaces ---------- */
 .glass {
-  background: rgba(21, 27, 41, 0.55);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(94, 234, 212, 0.08);
+  background: linear-gradient(160deg, rgba(21, 28, 44, 0.72), rgba(14, 19, 31, 0.62));
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  box-shadow: 0 10px 40px -12px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.cyber-grid {
+  background-image:
+    linear-gradient(to right, rgba(94, 234, 212, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(94, 234, 212, 0.035) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, black 35%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, black 35%, transparent 100%);
+}
+
+@keyframes scanline {
+  0%   { top: -8%; opacity: 0; }
+  15%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+.animate-scanline {
+  animation: scanline 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 @keyframes border-glow {
-  0%, 100% { border-color: rgba(94, 234, 212, 0.12); }
-  50%      { border-color: rgba(129, 140, 248, 0.35); }
+  0%, 100% { border-color: rgba(94, 234, 212, 0.16); }
+  50%      { border-color: rgba(129, 140, 248, 0.42); }
 }
 .glow-border {
   animation: border-glow 3s ease-in-out infinite;
@@ -125,3 +145,4 @@ input[type='range']::-moz-range-thumb {
 .float-y {
   animation: float-y 3.2s ease-in-out infinite;
 }
+

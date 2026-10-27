@@ -17,3 +17,6 @@ __pycache__
 .venv
 venv
 *.egg-info
+web/frontend/node_modules
+web/frontend/.next
+web/frontend/out

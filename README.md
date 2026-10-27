@@ -27,14 +27,15 @@ clearly visible for ADAS computer vision pipelines.
 
 ## 📊 Quantitative Results (LOL eval15 Dataset)
 
-| Method | PSNR (dB) ↑ | SSIM ↑ | Improvement |
-|--------|------------|--------|-------------|
-| Original (Dark Input) | 7.80 | 0.186 | baseline |
-| AutoContrast (Traditional) | 13.12 | 0.518 | +5.32 dB |
-| **UNLET-ADAS (Ours)** | **19.20** | **0.753** | **+11.40 dB** |
+| Method | 256×256 PSNR (dB) ↑ | 256×256 SSIM ↑ | Full-Res PSNR (dB) ↑ | Full-Res SSIM ↑ | Params |
+|--------|---------------------|----------------|----------------------|-----------------|--------|
+| Original (Dark Input) | 7.80 | 0.186 | 7.77 | 0.191 | — |
+| AutoContrast (Traditional) | 13.12 | 0.518 | 11.24 | 0.380 | — |
+| Zero-DCE++ (w/o CBAM Ablation) | 18.45 | 0.718 | 17.61 | 0.531 | 19,291 |
+| **UNLET-ADAS (Ours, w/ CBAM)** | **19.26** | **0.757** | **18.49** | **0.579** | **21,769** |
 
-> UNLET-ADAS outperforms traditional AutoContrast by **+5.68 dB PSNR**
-> and achieves **4× better SSIM** than the dark input.
+> UNLET-ADAS outperforms traditional AutoContrast by **+6.14 dB PSNR** (proxy) / **+7.25 dB PSNR** (full-res),
+> achieves **4× better SSIM** than the dark input, and gains **+0.81–0.88 dB PSNR** from the 2,478-parameter CBAM attention modules.
 
 ---
 

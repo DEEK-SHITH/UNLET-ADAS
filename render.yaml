@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: unlet-adas-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile.web
+    plan: free
+    envVars:
+      - key: PORT
+        value: "7860"

@@ -25,23 +25,13 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src.enhance import correct_color_cast, scene_blend_weight
+from src.enhance import enhance_pil
 from src.model import build_model
 
 
 def _enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
-    # Mirrors app/streamlit_app.py's enhance_pil exactly -- that file
-    # can't be imported directly outside a Streamlit runtime context,
-    # so this benchmark keeps its own copy of the same logic.
-    arr = np.array(pil_image, dtype=np.float32) / 255.0
-    t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device)
-    enh, _ = model.enhance_full_res(t, proxy_size=proxy_size)
-    if adaptive:
-        alpha = scene_blend_weight(float(arr.mean()))
-        enh = t * (1 - alpha) + enh * alpha
-    out = (enh[0].permute(1, 2, 0).cpu().numpy()
-           * 255).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(correct_color_cast(out))
+    return enhance_pil(
+        model, device, pil_image, adaptive=adaptive, proxy_size=proxy_size)
 
 
 def _load_frames(video_path, n):

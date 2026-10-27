@@ -1,0 +1,64 @@
+# ======================================================================
+# UNLET-ADAS Full-Stack Web App (Next.js + FastAPI) — Production Docker
+# ======================================================================
+# Multi-stage build:
+#   1. Stage `frontend-builder` compiles `web/frontend` (Next.js) into
+#      a static export (`web/frontend/out`).
+#   2. Stage `runtime` installs the Python ML stack (PyTorch, YOLOv8s,
+#      OpenCV, FastAPI) and serves BOTH the Next.js UI and `/api/*`
+#      endpoints from a single uvicorn server on port 7860 (or $PORT).
+#
+# Compatible out-of-the-box with:
+#   - Hugging Face Spaces (Docker SDK — Free CPU 16GB RAM or GPU tier)
+#   - Render.com / Railway.app / Fly.io
+# ======================================================================
+
+# ── Stage 1: Build Next.js Frontend ──────────────────────────────────
+FROM node:20-slim AS frontend-builder
+WORKDIR /frontend
+COPY web/frontend/package.json web/frontend/package-lock.json* ./
+RUN npm install
+COPY web/frontend/ ./
+ENV NEXT_STATIC_EXPORT=1
+RUN npm run build
+
+# ── Stage 2: Python + FastAPI + PyTorch Runtime ──────────────────────
+FROM python:3.11-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 appuser
+ENV HOME=/home/appuser \
+    PATH=/home/appuser/.local/bin:$PATH \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+
+WORKDIR /app
+
+COPY --chown=appuser:appuser requirements.txt ./
+COPY --chown=appuser:appuser web/backend/requirements.txt ./web/backend/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt -r web/backend/requirements.txt
+
+COPY --chown=appuser:appuser . .
+COPY --from=frontend-builder --chown=appuser:appuser /frontend/out ./web/frontend/out
+
+# Ensure yolov8s.pt is present in the image so it doesn't need to download at runtime
+RUN if [ ! -f /app/yolov8s.pt ]; then \
+      curl -L -o /app/yolov8s.pt https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8s.pt; \
+    fi && chown appuser:appuser /app/yolov8s.pt
+
+USER appuser
+
+EXPOSE 7860
+
+CMD ["sh", "-c", "uvicorn web.backend.main:app --host 0.0.0.0 --port ${PORT:-7860}"]

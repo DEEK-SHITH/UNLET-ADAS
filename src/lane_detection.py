@@ -137,9 +137,61 @@ def _average_slope_line(lines, h, y_top_frac=0.55, y_bottom_frac=1.0):
     return (x1, y1, x2, y2)
 
 
+class LaneTracker:
+    """
+    Temporal smoother (Exponential Moving Average + short dropout hold)
+    for left/right lane lines across consecutive video frames.
+
+    Dashed lane markings and brief lighting glitches cause single-frame
+    dropouts or jitter in stateless Canny+Hough detection. Smoothing
+    detected endpoints with an EMA (alpha) and holding the last valid
+    line for up to `max_missing` frames eliminates flicker while still
+    clearing promptly when markings genuinely end.
+    """
+    def __init__(self, alpha=0.4, max_missing=3):
+        self.alpha = float(alpha)
+        self.max_missing = int(max_missing)
+        self._left = None
+        self._right = None
+        self._miss_left = 0
+        self._miss_right = 0
+
+    def _update_side(self, current, prev, miss_count):
+        if current is not None:
+            if prev is None:
+                return tuple(int(v) for v in current), 0
+            a = self.alpha
+            smoothed = tuple(
+                int(round(a * c + (1.0 - a) * p))
+                for c, p in zip(current, prev)
+            )
+            return smoothed, 0
+        if prev is not None and miss_count < self.max_missing:
+            return prev, miss_count + 1
+        return None, miss_count + 1
+
+    def update(self, left_line, right_line):
+        self._left, self._miss_left = self._update_side(
+            left_line, self._left, self._miss_left)
+        self._right, self._miss_right = self._update_side(
+            right_line, self._right, self._miss_right)
+
+        if self._left is not None and self._right is not None:
+            if self._left[0] >= self._right[0] or self._left[2] >= self._right[2]:
+                self._left, self._right = None, None
+
+        return self._left, self._right
+
+    def reset(self):
+        self._left = None
+        self._right = None
+        self._miss_left = 0
+        self._miss_right = 0
+
+
 def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
                   hough_threshold=25, min_line_len=30, max_line_gap=80,
-                  roi_top=0.55, roi_bottom=1.0):
+                  roi_top=0.55, roi_bottom=1.0, tracker=None):
     """
     Detect left/right lane boundary lines on an (already enhanced)
     RGB frame.
@@ -152,6 +204,10 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
     dashboard/steering-wheel-mounted camera whose lower frame is
     dashboard, not road (that region's high-contrast gauge/wheel edges
     otherwise get mistaken for lane boundaries).
+
+    Pass a `LaneTracker` instance via `tracker` when processing video
+    to smooth frame-to-frame jitter and bridge brief 1-3 frame dropouts
+    on dashed markings.
 
     Returns (left_line, right_line), each either None or an
     (x1, y1, x2, y2) tuple in pixel coordinates.
@@ -191,6 +247,9 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
     if left_line is not None and right_line is not None:
         if left_line[0] >= right_line[0] or left_line[2] >= right_line[2]:
             left_line, right_line = None, None
+
+    if tracker is not None:
+        return tracker.update(left_line, right_line)
 
     return (left_line, right_line)
 

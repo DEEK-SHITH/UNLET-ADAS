@@ -20,6 +20,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -108,10 +109,48 @@ async def enhance_image(
         use_depth_risk=use_depth_risk,
     )
     enh_rgb, result = pl.run_image_pipeline(pil_image, opts)
-    result['original_image'] = _rgb_to_data_url(
-        __import__('numpy').array(pil_image))
+    result['original_image'] = _rgb_to_data_url(np.array(pil_image))
     result['enhanced_image'] = _rgb_to_data_url(enh_rgb)
     return result
+
+
+@app.post('/api/enhance/live-frame')
+async def enhance_live_frame(
+    file: UploadFile = File(...),
+    adaptive: bool = Form(True),
+    det_conf: float = Form(0.25),
+    det_imgsz: int = Form(384),
+    enable_detect: bool = Form(True),
+    enable_lanes: bool = Form(False),
+    interleaved: bool = Form(True),
+    quality_mode: str = Form('turbo'),
+):
+    """
+    Ultra-low-latency endpoint designed specifically for live webcam / camera feeds.
+    Skips redundant original_image base64 encoding and runs lightweight,
+    interleaved perception to sustain high interactive FPS.
+    """
+    if not pl.MODELS.enhancer:
+        raise HTTPException(503, 'Enhancer model not loaded')
+
+    raw = await file.read()
+    opts = pl.LiveOptions(
+        adaptive=adaptive,
+        det_conf=det_conf,
+        det_imgsz=det_imgsz,
+        enable_detect=enable_detect,
+        enable_lanes=enable_lanes,
+        interleaved=interleaved,
+        quality_mode=quality_mode,
+    )
+    try:
+        jpeg_bytes, stats = pl.run_live_pipeline(raw, opts)
+    except Exception as e:
+        raise HTTPException(400, f'Error processing live frame: {e}')
+
+    b64 = base64.b64encode(jpeg_bytes).decode('ascii')
+    stats['enhanced_image'] = f'data:image/jpeg;base64,{b64}'
+    return stats
 
 
 @app.post('/api/enhance/video')
@@ -122,8 +161,11 @@ async def enhance_video(
     det_imgsz: int = Form(640),
     enable_detect: bool = Form(True),
     enable_pothole: bool = Form(False),
+    enable_signs: bool = Form(False),
     enable_lanes: bool = Form(False),
+    use_depth_risk: bool = Form(False),
     fast_mode: bool = Form(True),
+    quality_preset: str = Form('high'),
 ):
     if not pl.MODELS.enhancer:
         raise HTTPException(503, 'Enhancer model not loaded')
@@ -137,7 +179,9 @@ async def enhance_video(
     opts = pl.VideoOptions(
         adaptive=adaptive, det_conf=det_conf, det_imgsz=det_imgsz,
         enable_detect=enable_detect, enable_pothole=enable_pothole,
-        enable_lanes=enable_lanes, fast_mode=fast_mode,
+        enable_signs=enable_signs, enable_lanes=enable_lanes,
+        use_depth_risk=use_depth_risk, fast_mode=fast_mode,
+        quality_preset=quality_preset,
     )
 
     import threading
@@ -177,3 +221,30 @@ def job_video(job_id: str):
         raise HTTPException(404, 'Video not ready')
     return FileResponse(job.output_path, media_type='video/mp4',
                          filename=f'unlet_adas_enhanced_{job_id}.mp4')
+
+
+# When deployed as a unified container (Dockerfile.web), serve the
+# pre-built Next.js static export (`web/frontend/out`) from the same port.
+FRONTEND_OUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'frontend',
+    'out',
+)
+if os.path.isdir(FRONTEND_OUT_DIR):
+    from fastapi.staticfiles import StaticFiles
+
+    @app.get('/video')
+    def serve_video_page():
+        page = os.path.join(FRONTEND_OUT_DIR, 'video.html')
+        if os.path.isfile(page):
+            return FileResponse(page, media_type='text/html')
+        raise HTTPException(404)
+
+    @app.get('/live')
+    def serve_live_page():
+        page = os.path.join(FRONTEND_OUT_DIR, 'live.html')
+        if os.path.isfile(page):
+            return FileResponse(page, media_type='text/html')
+        raise HTTPException(404)
+
+    app.mount('/', StaticFiles(directory=FRONTEND_OUT_DIR, html=True), name='frontend')

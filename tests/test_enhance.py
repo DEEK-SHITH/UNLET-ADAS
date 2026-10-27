@@ -132,3 +132,39 @@ def test_transcode_for_browser_falls_back_on_failure(tmp_path, monkeypatch):
     assert ok is False
     assert path.read_bytes() == original_bytes
     assert not os.path.exists(str(path) + '.h264.mp4')
+
+
+def test_correct_color_cast_reduces_strong_green_tint():
+    from src.enhance import correct_color_cast
+    # Create a 200x200 image with a strong green cast (exercises the >=16384 strided path)
+    tinted = np.zeros((200, 200, 3), dtype=np.uint8)
+    tinted[:, :, 0] = 80
+    tinted[:, :, 1] = 160
+    tinted[:, :, 2] = 80
+    corrected = correct_color_cast(tinted)
+    assert corrected.shape == tinted.shape
+    assert corrected.dtype == np.uint8
+    # Green dominance (G - R) should be reduced after correction
+    orig_gap = float(tinted[:, :, 1].mean()) - float(tinted[:, :, 0].mean())
+    corr_gap = float(corrected[:, :, 1].mean()) - float(corrected[:, :, 0].mean())
+    assert corr_gap < orig_gap
+
+
+def test_enhance_full_res_matches_full_curve_upsample():
+    import torch
+    import torch.nn.functional as F
+    from src.model import build_model
+
+    torch.manual_seed(0)
+    model = build_model().eval()
+    x_full = torch.rand(1, 3, 96, 128)
+    proxy_size = 32
+
+    with torch.no_grad():
+        enh_opt, curves = model.enhance_full_res(x_full, proxy_size=proxy_size)
+        curves_full = F.interpolate(
+            curves, size=x_full.shape[2:], mode='bilinear', align_corners=False)
+        enh_ref = model.apply_curves(x_full, curves_full)
+
+    assert torch.allclose(enh_opt, enh_ref, atol=1e-6)
+

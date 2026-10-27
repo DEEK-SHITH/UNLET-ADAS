@@ -228,3 +228,37 @@ def test_estimate_dashboard_cutoff_ignores_a_tiny_static_sliver():
     # real dashboard region.
     frames = _frames_with_static_bottom(static_frac=0.03)
     assert estimate_dashboard_cutoff(frames) == 1.0
+
+
+def test_lane_tracker_bridges_short_dropout_and_expires():
+    from src.lane_detection import LaneTracker
+    tracker = LaneTracker(alpha=0.5, max_missing=2)
+    clean_frame = _synthetic_lane_frame()
+    blank_frame = np.full((300, 400, 3), 30, dtype=np.uint8)
+
+    # Frame 1: both lanes detected
+    l1, r1 = detect_lanes(clean_frame, tracker=tracker)
+    assert l1 is not None and r1 is not None
+
+    # Frame 2 & 3 (dropouts <= max_missing): tracker holds previous lines
+    l2, r2 = detect_lanes(blank_frame, tracker=tracker)
+    assert l2 == l1 and r2 == r1
+    l3, r3 = detect_lanes(blank_frame, tracker=tracker)
+    assert l3 == l1 and r3 == r1
+
+    # Frame 4 (exceeds max_missing=2): tracker expires held lines
+    l4, r4 = detect_lanes(blank_frame, tracker=tracker)
+    assert l4 is None and r4 is None
+
+
+def test_lane_tracker_ema_smooths_jitter():
+    from src.lane_detection import LaneTracker
+    tracker = LaneTracker(alpha=0.5, max_missing=2)
+    l1, r1 = tracker.update((40, 300, 180, 165), (360, 300, 220, 165))
+    assert l1 == (40, 300, 180, 165)
+
+    # Second update shifts x by +20 -> EMA (0.5) should land halfway (+10)
+    l2, r2 = tracker.update((60, 300, 200, 165), (380, 300, 240, 165))
+    assert l2 == (50, 300, 190, 165)
+    assert r2 == (370, 300, 230, 165)
+

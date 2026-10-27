@@ -74,7 +74,10 @@ def _pairs(low_dir, high_dir):
 
 
 @torch.no_grad()
-def evaluate(model, device, low_dir, high_dir, mode, proxy):
+def evaluate(model, device, low_dir, high_dir, mode, proxy,
+             postprocess=False):
+    from src.enhance import correct_color_cast, scene_blend_weight
+
     acc = {k: {'psnr': [], 'ssim': []}
            for k in ('Dark input', 'AutoContrast', 'UNLET-ADAS')}
 
@@ -95,7 +98,15 @@ def evaluate(model, device, low_dir, high_dir, mode, proxy):
             enh, _ = model(t)
         else:
             enh, _ = model.enhance_full_res(t, proxy_size=proxy)
-        enh = enh[0].permute(1, 2, 0).cpu().numpy().clip(0, 1)
+
+        if postprocess:
+            alpha = scene_blend_weight(float(low.mean()))
+            enh = t * (1.0 - alpha) + enh * alpha
+            enh_u8 = (enh[0].permute(1, 2, 0).cpu().numpy() * 255.0).clip(
+                0, 255).astype(np.uint8)
+            enh = correct_color_cast(enh_u8).astype(np.float32) / 255.0
+        else:
+            enh = enh[0].permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
         for name, img in (('Dark input', low), ('AutoContrast', auto),
                           ('UNLET-ADAS', enh)):
@@ -117,6 +128,9 @@ def main():
     ap.add_argument('--weights', default='app/zerodce_cbam_best.pt')
     ap.add_argument('--mode', choices=['proxy', 'fullres'], default='proxy')
     ap.add_argument('--proxy', type=int, default=256)
+    ap.add_argument('--postprocess', action='store_true',
+                    help='Apply production adaptive luminance blending and '
+                         'LAB color-cast correction after curve application.')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 
@@ -129,10 +143,12 @@ def main():
         if not os.path.isdir(d):
             raise SystemExit(f'Not found: {d}')
 
-    res = evaluate(model, device, low_dir, high_dir, args.mode, args.proxy)
+    res = evaluate(model, device, low_dir, high_dir, args.mode, args.proxy,
+                   postprocess=args.postprocess)
 
     print(f"\nLOL {args.split} | mode={args.mode} | device={device}"
-          f"{' | proxy=%d' % args.proxy if args.mode == 'proxy' else ''}")
+          f"{' | proxy=%d' % args.proxy if args.mode == 'proxy' else ''}"
+          f"{' | postprocess=on' if args.postprocess else ''}")
     if args.split == 'eval15':
         print("  NOTE: eval15 is also used for early stopping in "
               "src/train.py -- these are validation scores.")
@@ -150,9 +166,11 @@ def main():
     os.makedirs(os.path.join(ROOT, os.path.dirname(out)), exist_ok=True)
     with open(os.path.join(ROOT, out), 'w') as f:
         json.dump({'split': args.split, 'mode': args.mode,
-                   'proxy': args.proxy, 'weights': args.weights,
+                   'proxy': args.proxy, 'postprocess': args.postprocess,
+                   'weights': args.weights,
                    'device': device, 'results': res}, f, indent=2)
     print(f"\nSaved: {out}")
+
 
 
 if __name__ == '__main__':

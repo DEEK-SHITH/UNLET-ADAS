@@ -54,3 +54,11 @@ def test_classify_proximity_custom_thresholds():
     assert classify_proximity(0.5, high_thresh=0.4, med_thresh=0.2) == 'HIGH'
     assert classify_proximity(0.3, high_thresh=0.4, med_thresh=0.2) == 'MEDIUM'
     assert classify_proximity(0.1, high_thresh=0.4, med_thresh=0.2) == 'LOW'
+
+
+def test_classify_proximity_outside_ego_path_capped_at_medium():
+    assert classify_proximity(0.9, in_ego_path=True) == 'HIGH'
+    assert classify_proximity(0.9, in_ego_path=False) == 'MEDIUM'
+    assert classify_proximity(0.5, in_ego_path=False) == 'MEDIUM'
+    assert classify_proximity(0.1, in_ego_path=False) == 'LOW'
+

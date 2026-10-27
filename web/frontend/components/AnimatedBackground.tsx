@@ -1,6 +1,7 @@
 export default function AnimatedBackground() {
   return (
     <>
+      <div className="cyber-grid pointer-events-none fixed inset-0 z-0" />
       <div
         className="bg-orb"
         style={{

@@ -69,6 +69,36 @@ def dw_block(in_ch, out_ch):
         nn.ReLU(inplace=True))
 
 
+def _apply_curves_fast(x: torch.Tensor, curves: torch.Tensor, num_iters: int) -> torch.Tensor:
+    enhanced = x
+    for i in range(num_iters):
+        A = curves[:, i * 3 : (i + 1) * 3]
+        enhanced = torch.addcmul(enhanced, A, enhanced * (1.0 - enhanced)).clamp(0.0, 1.0)
+    return enhanced
+
+
+def _apply_proxy_curves_fast(
+    x_full: torch.Tensor, curves_proxy: torch.Tensor, num_iters: int
+) -> torch.Tensor:
+    enhanced = x_full
+    target_size = x_full.shape[2:]
+    same_size = (
+        curves_proxy.shape[2] == target_size[0]
+        and curves_proxy.shape[3] == target_size[1]
+    )
+    for i in range(num_iters):
+        A_small = curves_proxy[:, i * 3 : (i + 1) * 3]
+        A = (
+            A_small
+            if same_size
+            else F.interpolate(
+                A_small, size=target_size, mode='bilinear', align_corners=False
+            )
+        )
+        enhanced = torch.addcmul(enhanced, A, enhanced * (1.0 - enhanced)).clamp_(0.0, 1.0)
+    return enhanced
+
+
 class ZeroDCECBAM(nn.Module):
     """
     Zero-DCE++ with CBAM Attention.
@@ -128,13 +158,7 @@ class ZeroDCECBAM(nn.Module):
 
     def apply_curves(self, x, curves):
         """Apply the iterative curve formula to x using given curve maps."""
-        enhanced = x
-        for i in range(self.num_iters):
-            A        = curves[:, i*3:(i+1)*3]
-            enhanced = torch.clamp(
-                enhanced + A * enhanced * (1 - enhanced),
-                0, 1)
-        return enhanced
+        return _apply_curves_fast(x, curves, self.num_iters)
 
     def forward(self, x):
         curves   = self.estimate_curves(x)
@@ -150,15 +174,21 @@ class ZeroDCECBAM(nn.Module):
         during training penalizes high-frequency curves), so upsampling
         them introduces no blur — unlike resizing actual pixel content
         down and back up, which is what causes soft/blurry output.
+
+        Upsamples 3 curve channels at a time and fuses the update via
+        torch.addcmul rather than allocating a 24-channel full-resolution
+        tensor at once, cutting peak memory footprint by 8x so
+        intermediate buffers stay in CPU L3 cache.
         """
-        proxy       = F.interpolate(
-            x_full, size=(proxy_size, proxy_size),
-            mode='bilinear', align_corners=False)
-        curves      = self.estimate_curves(proxy)
-        curves_full = F.interpolate(
-            curves, size=x_full.shape[2:],
-            mode='bilinear', align_corners=False)
-        return self.apply_curves(x_full, curves_full), curves_full
+        if x_full.shape[2] == proxy_size and x_full.shape[3] == proxy_size:
+            proxy = x_full
+        else:
+            proxy = F.interpolate(
+                x_full, size=(proxy_size, proxy_size),
+                mode='bilinear', align_corners=False)
+        curves = self.estimate_curves(proxy)
+        enhanced = _apply_proxy_curves_fast(x_full, curves, self.num_iters)
+        return enhanced, curves
 
 
 def build_model(num_iters=8, channels=32, use_cbam=True):

@@ -78,11 +78,10 @@ def load_midas(device):
 def estimate_depth_map(model, transform, device, image_rgb):
     """
     Run MiDaS on image_rgb (HxWx3 uint8) and return a per-pixel
-    relative depth map at the image's own resolution, min-max
-    normalized to 0..1 per frame (1.0 = nearest point in this frame,
-    0.0 = farthest). MiDaS's raw output is unitless/relative rather
-    than metric, so this per-frame normalization is what makes a
-    fixed proximity threshold meaningful frame to frame.
+    relative depth map at the image's own resolution, robustly
+    normalized to 0..1 per frame (1.0 = nearest region in this frame,
+    0.0 = farthest) using the 2nd–98th percentile range so single-pixel
+    disparity spikes do not squash the rest of the scene.
     """
     h, w = image_rgb.shape[:2]
     inp = transform(image_rgb).to(device)
@@ -91,10 +90,14 @@ def estimate_depth_map(model, transform, device, image_rgb):
         pred.unsqueeze(1), size=(h, w),
         mode='bicubic', align_corners=False).squeeze(1).squeeze(0)
     depth = pred.cpu().numpy()
-    lo, hi = float(depth.min()), float(depth.max())
+    lo, hi = np.percentile(depth, [2.0, 98.0])
+    lo, hi = float(lo), float(hi)
+    if hi - lo < 1e-6:
+        lo, hi = float(depth.min()), float(depth.max())
     if hi - lo < 1e-6:
         return np.zeros((h, w), dtype=np.float32)
-    return ((depth - lo) / (hi - lo)).astype(np.float32)
+    norm = np.clip((depth - lo) / (hi - lo), 0.0, 1.0)
+    return norm.astype(np.float32)
 
 
 def sample_proximity(depth_map, x1, y1, x2, y2):
@@ -116,14 +119,19 @@ def sample_proximity(depth_map, x1, y1, x2, y2):
     return float(patch.mean())
 
 
-def classify_proximity(proximity, high_thresh=0.65, med_thresh=0.35):
+def classify_proximity(proximity, high_thresh=0.65, med_thresh=0.35,
+                        in_ego_path=True):
     """
     Bucket a 0..1 proximity value (see sample_proximity) into
     LOW/MEDIUM/HIGH risk. Thresholds are against the per-frame
-    min-max-normalized depth, not a metric distance.
+    normalized depth, not a metric distance. Objects outside the ego
+    vehicle's travel corridor (in_ego_path=False) are capped at MEDIUM
+    so close peripheral objects do not trigger false HIGH collision
+    alerts.
     """
     if proximity >= high_thresh:
-        return 'HIGH'
+        return 'HIGH' if in_ego_path else 'MEDIUM'
     if proximity >= med_thresh:
         return 'MEDIUM'
     return 'LOW'
+

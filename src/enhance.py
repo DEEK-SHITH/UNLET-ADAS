@@ -96,22 +96,57 @@ def correct_color_cast(frame_uint8, strength=0.6, lum_pctl=60, max_shift=18):
     only LAB's a/b (color) channels partially back toward neutral
     (L, i.e. brightness, is left untouched), and capping the shift
     keeps this a gentle tint fix rather than a full renormalization.
+
+    For high-resolution frames, tint statistics are estimated on a 4x4
+    strided subsample and applied via a 256-entry uint8 LUT (cv2.LUT),
+    avoiding full-frame float32 allocations and cutting CPU latency ~10x.
     """
-    lab = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2LAB).astype(np.float32)
-    L, A, B = lab[:,:,0], lab[:,:,1], lab[:,:,2]
+    lab = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2LAB)
+    h, w = lab.shape[:2]
+    sample = lab[::4, ::4] if (h * w >= 16384) else lab
+    L_s = sample[:, :, 0]
+    A_s = sample[:, :, 1]
+    B_s = sample[:, :, 2]
 
-    mask = L >= np.percentile(L, lum_pctl)
+    mask = L_s >= np.percentile(L_s, lum_pctl)
     if mask.sum() < 50:
-        mask = np.ones_like(L, dtype=bool)
+        mask = np.ones_like(L_s, dtype=bool)
 
-    a_dev = A[mask].mean() - 128.0
-    b_dev = B[mask].mean() - 128.0
-    a_shift = np.clip(-a_dev * strength, -max_shift, max_shift)
-    b_shift = np.clip(-b_dev * strength, -max_shift, max_shift)
+    a_dev = float(A_s[mask].mean()) - 128.0
+    b_dev = float(B_s[mask].mean()) - 128.0
+    a_shift = float(np.clip(-a_dev * strength, -max_shift, max_shift))
+    b_shift = float(np.clip(-b_dev * strength, -max_shift, max_shift))
 
-    lab[:,:,1] = np.clip(A + a_shift, 0, 255)
-    lab[:,:,2] = np.clip(B + b_shift, 0, 255)
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    idx = np.arange(256, dtype=np.float32)
+    lut_a = np.clip(idx + a_shift, 0, 255).astype(np.uint8)
+    lut_b = np.clip(idx + b_shift, 0, 255).astype(np.uint8)
+    lab[:, :, 1] = cv2.LUT(lab[:, :, 1], lut_a)
+    lab[:, :, 2] = cv2.LUT(lab[:, :, 2], lut_b)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+
+
+@torch.no_grad()
+def enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
+    """
+    Enhance a PIL Image at full resolution: curves are estimated on a
+    small proxy_size x proxy_size tensor and applied directly to the
+    full-resolution image. Returns a PIL Image.
+    """
+    orig = pil_image.convert('RGB')
+    arr = np.array(orig, dtype=np.float32) / 255.0
+    t_full = torch.from_numpy(arr).permute(
+        2, 0, 1).unsqueeze(0).to(device)
+
+    enh_full, _ = model.enhance_full_res(t_full, proxy_size=proxy_size)
+
+    if adaptive:
+        alpha = scene_blend_weight(float(arr.mean()))
+        enh_full = t_full * (1 - alpha) + enh_full * alpha
+
+    enh_np = (enh_full[0].permute(1, 2, 0).cpu().numpy()
+              * 255).clip(0, 255).astype(np.uint8)
+    enh_np = correct_color_cast(enh_np)
+    return Image.fromarray(enh_np)
 
 
 @torch.no_grad()
@@ -122,22 +157,8 @@ def enhance_image(model, device, image_path,
     Returns PIL Image of enhanced result.
     """
     orig = Image.open(image_path).convert('RGB')
-    W, H = orig.size
-
-    arr    = np.array(orig, dtype=np.float32) / 255.0
-    t_full = torch.from_numpy(arr).permute(
-        2, 0, 1).unsqueeze(0).to(device)
-
-    enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
-
-    if adaptive:
-        alpha    = scene_blend_weight(float(arr.mean()))
-        enh_full = t_full * (1 - alpha) + enh_full * alpha
-
-    enh_np = (enh_full[0].permute(1, 2, 0).cpu().numpy()
-              * 255).clip(0, 255).astype(np.uint8)
-    enh_np = correct_color_cast(enh_np)
-    result = Image.fromarray(enh_np)
+    result = enhance_pil(
+        model, device, orig, adaptive=adaptive, proxy_size=size)
 
     if output_path:
         result.save(output_path)

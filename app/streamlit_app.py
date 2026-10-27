@@ -225,35 +225,28 @@ h1, h2, h3, h4, p, label, span, .stMarkdown { color: var(--text); }
 </style>
 """, unsafe_allow_html=True)
 
-ADAS_CLASSES = {
-    0:  ('Person',        (50,  205,  50)),
-    1:  ('Bicycle',       (255, 165,   0)),
-    2:  ('Car',           ( 30, 144, 255)),
-    3:  ('Motorcycle',    (255, 100, 100)),
-    5:  ('Bus',           (138,  43, 226)),
-    7:  ('Truck',         (255,  20, 147)),
-    9:  ('Traffic Light', (255, 215,   0)),
-    11: ('Stop Sign',     (220,  20,  60)),
-}
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
-# Class map for the optional low-light-specialized detector (see
-# src/train_lowlight.py) — a different YOLO model with its own 0..4
-# class-id scheme (NOT COCO ids), covering only the 5 ADAS classes
-# ExDark actually has night-time training data for. Same colors as
-# the matching ADAS_CLASSES entries for visual consistency.
-LOWLIGHT_CLASSES = {
-    0: ('Person',     (50,  205,  50)),
-    1: ('Bicycle',    (255, 165,   0)),
-    2: ('Car',        ( 30, 144, 255)),
-    3: ('Motorcycle', (255, 100, 100)),
-    4: ('Bus',        (138,  43, 226)),
-}
+from src.detection import (  # noqa: E402
+    ADAS_CLASSES,
+    LOWLIGHT_CLASSES,
+    RISK_COLORS,
+    _draw_detection,
+    _plausible_traffic_light_shape,
+    detect_and_draw,
+    estimate_risk,
+    estimate_risk_depth,
+    estimate_risk_geometry,
+    redraw_cached_detections,
+    track_and_draw,
+)
+from src.enhance import enhance_pil  # noqa: E402
 
 
 @st.cache_resource
 def load_enhancer():
-    sys.path.insert(0, os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))
     from src.model import build_model
     DEVICE = torch.device(
         'cuda' if torch.cuda.is_available() else 'cpu')
@@ -337,234 +330,6 @@ def load_depth_model():
     return load_midas(device)
 
 
-@torch.no_grad()
-def enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
-    """
-    Enhance at full resolution: curves are estimated on a small
-    proxy (cheap — this is the only part that runs the network's
-    conv layers) then applied directly to the original full-size
-    image (cheap elementwise math), so no detail is lost to a resize
-    round-trip. When adaptive=True, already well-lit (daytime) images
-    are blended back toward the original instead of being
-    over-brightened. A smaller proxy_size trades a little curve
-    precision for speed — useful for live/real-time use where the
-    network runs every frame; the default 256 is for one-shot images.
-    """
-    from src.enhance import scene_blend_weight, correct_color_cast
-    arr = np.array(pil_image, dtype=np.float32) / 255.0
-    t   = torch.from_numpy(arr).permute(
-        2, 0, 1).unsqueeze(0).to(device)
-    enh, _ = model.enhance_full_res(t, proxy_size=proxy_size)
-    if adaptive:
-        alpha = scene_blend_weight(float(arr.mean()))
-        enh   = t * (1 - alpha) + enh * alpha
-    out = (enh[0].permute(1, 2, 0).cpu().numpy()
-           * 255).clip(0, 255).astype(np.uint8)
-    out = correct_color_cast(out)
-    return Image.fromarray(out)
-
-
-RISK_COLORS = {
-    'HIGH':   (220,  20,  60),   # red
-    'MEDIUM': (255, 165,   0),   # amber
-    'LOW':    ( 50, 205,  50),   # green
-}
-
-
-def estimate_risk_geometry(x1, y1, x2, y2, frame_w, frame_h):
-    """
-    Rough collision-proximity estimate from box geometry alone (no
-    depth sensor / calibration available): a box that fills a large
-    fraction of the frame's height is close to the camera, and one
-    centered in the middle third of the frame is roughly in the
-    ego vehicle's path. This is a heuristic, not a measured distance
-    — a large box could be a big nearby car OR a large but distant
-    truck, and box size alone can't tell them apart. Used as the
-    fallback when no depth model is available (see
-    estimate_risk_depth for the MiDaS-based replacement).
-    """
-    box_h_frac = (y2 - y1) / max(frame_h, 1)
-    cx = (x1 + x2) / 2
-    in_path = 0.2 * frame_w <= cx <= 0.8 * frame_w
-    if box_h_frac > 0.35 and in_path:
-        return 'HIGH'
-    if box_h_frac > 0.18 or (in_path and box_h_frac > 0.10):
-        return 'MEDIUM'
-    return 'LOW'
-
-
-def estimate_risk_depth(depth_map, x1, y1, x2, y2):
-    """
-    Proximity-risk estimate from an actual MiDaS depth map instead of
-    box geometry: looks up the average relative depth (0..1, higher =
-    closer) under the box's own footprint rather than inferring
-    closeness from how large the box looks. Thresholds are against
-    the per-frame-normalized depth (see estimate_depth_map), not a
-    metric distance — MiDaS gives relative near/far ordering, not
-    calibrated meters.
-    """
-    from src.depth import sample_proximity, classify_proximity
-    proximity = sample_proximity(depth_map, x1, y1, x2, y2)
-    return classify_proximity(proximity)
-
-
-def estimate_risk(x1, y1, x2, y2, frame_w, frame_h, depth_map=None):
-    """
-    Dispatches to the depth-based estimate when a MiDaS depth map is
-    available for this frame, otherwise falls back to the geometry
-    heuristic (e.g. depth model failed to load, or was turned off).
-    """
-    if depth_map is not None:
-        return estimate_risk_depth(depth_map, x1, y1, x2, y2)
-    return estimate_risk_geometry(x1, y1, x2, y2, frame_w, frame_h)
-
-
-def _plausible_traffic_light_shape(x1, y1, x2, y2):
-    """
-    Best-effort mitigation for a real, observed false positive: a
-    bright street lamp -- especially the bloom/halo low-light
-    enhancement adds around bright points at night -- can get
-    classified as 'Traffic Light' by the stock COCO-trained YOLOv8
-    detector, which has never seen a labeled street lamp as its own
-    class. A real traffic light housing is reliably taller than it is
-    wide (the classic vertical 3-light stack); a round glare blob is
-    typically closer to square. Reject only clearly-too-wide boxes.
-
-    This is a coarse heuristic, not a real fix: it won't catch an
-    elongated false positive, and could in principle reject an
-    unusually-shaped real traffic light (e.g. a horizontal-mount
-    signal). It only ever suppresses 'Traffic Light' detections that
-    fail this shape check — every other class is unaffected.
-    """
-    w, h = x2 - x1, y2 - y1
-    if h <= 0:
-        return False
-    return (w / h) <= 0.75
-
-
-def _draw_detection(img_bgr, x1, y1, x2, y2, label, risk):
-    """Box outlined by risk level; class/ID/confidence as the label."""
-    color = RISK_COLORS[risk]
-    thickness = 3 if risk == 'HIGH' else 2
-    cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, thickness)
-    (tw, th), _ = cv2.getTextSize(
-        label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-    cv2.rectangle(img_bgr,
-        (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-    cv2.putText(img_bgr, label, (x1 + 3, y1 - 4),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55, (255, 255, 255), 2, cv2.LINE_AA)
-
-
-def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
-                     class_map=None):
-    """Single-frame detection (no temporal tracking — see track_and_draw
-    for video, which additionally assigns persistent IDs). Pass
-    depth_map (see src.depth.estimate_depth_map) to use actual MiDaS
-    depth for proximity risk instead of the box-geometry heuristic.
-    Pass class_map (default ADAS_CLASSES) to interpret a different
-    model's class ids — e.g. LOWLIGHT_CLASSES for the optional
-    ExDark-fine-tuned detector, which uses its own 0..4 scheme, not
-    COCO ids."""
-    if class_map is None:
-        class_map = ADAS_CLASSES
-    results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
-    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    h, w = image_np.shape[:2]
-    counts = {}
-    det_list = []
-    high_risk = False
-    for box in results.boxes:
-        cls_id = int(box.cls[0])
-        if cls_id not in class_map:
-            continue
-        name, _ = class_map[cls_id]
-        conf_s = float(box.conf[0])
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        if name == 'Traffic Light' and not _plausible_traffic_light_shape(
-                x1, y1, x2, y2):
-            continue
-        risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
-        high_risk = high_risk or risk == 'HIGH'
-        _draw_detection(
-            img_bgr, x1, y1, x2, y2,
-            f'{name} · {risk}', risk)
-        counts[name] = counts.get(name, 0) + 1
-        det_list.append({
-            'name': name, 'conf': conf_s,
-            'box': [x1, y1, x2, y2], 'risk': risk,
-        })
-    ann = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return ann, det_list, counts, high_risk
-
-
-def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
-                    class_map=None):
-    """
-    Like detect_and_draw, but uses YOLOv8's built-in ByteTrack
-    (persist=True keeps the tracker's internal state alive across
-    calls on the same model instance) to assign each object a stable
-    ID across frames, instead of re-detecting from scratch every
-    frame with no memory of what was seen before. Pass depth_map to
-    use actual MiDaS depth for proximity risk (see detect_and_draw).
-    Pass class_map (default ADAS_CLASSES) to interpret a different
-    model's class ids (see detect_and_draw).
-    """
-    if class_map is None:
-        class_map = ADAS_CLASSES
-    results = yolo.track(
-        image_np, conf=conf, imgsz=imgsz, persist=True,
-        tracker='bytetrack.yaml', verbose=False)[0]
-    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    h, w = image_np.shape[:2]
-    counts = {}
-    track_ids = set()
-    high_risk = False
-    det_list = []
-    ids = results.boxes.id
-    for i, box in enumerate(results.boxes):
-        cls_id = int(box.cls[0])
-        if cls_id not in class_map:
-            continue
-        name, _ = class_map[cls_id]
-        conf_s = float(box.conf[0])
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        if name == 'Traffic Light' and not _plausible_traffic_light_shape(
-                x1, y1, x2, y2):
-            continue
-        risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map)
-        high_risk = high_risk or risk == 'HIGH'
-        track_id = int(ids[i]) if ids is not None else None
-        id_bit = f'#{track_id} ' if track_id is not None else ''
-        label = f'{name} {id_bit}· {risk}'
-        _draw_detection(img_bgr, x1, y1, x2, y2, label, risk)
-        counts[name] = counts.get(name, 0) + 1
-        if track_id is not None:
-            track_ids.add(track_id)
-        det_list.append({
-            'name': name, 'box': [x1, y1, x2, y2],
-            'risk': risk, 'label': label, 'track_id': track_id,
-        })
-    ann = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return ann, counts, track_ids, high_risk, det_list
-
-
-def redraw_cached_detections(image_np, det_list):
-    """
-    Draw a previously-computed set of detection boxes onto a new frame
-    without running the model again — used on the frames "fast mode"
-    skips, so the video keeps a box on every frame (no flicker) while
-    only paying for a fresh YOLO pass every other frame.
-    """
-    if not det_list:
-        return image_np
-    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    for d in det_list:
-        x1, y1, x2, y2 = d['box']
-        _draw_detection(img_bgr, x1, y1, x2, y2, d['label'], d['risk'])
-    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-
 def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
                         pothole_yolo, has_pothole,
                         sign_yolo=None, has_signs=False,
@@ -587,7 +352,7 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
     cancelled).
     """
     from src.enhance import enhance_frame_batch, scene_aware_conf
-    from src.lane_detection import detect_lanes, draw_lanes
+    from src.lane_detection import LaneTracker, detect_lanes, draw_lanes
 
     p = job['params']
     fb, ob = [], []
@@ -639,8 +404,10 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
             frame_conf = scene_aware_conf(p['det_conf'], orig_lum)
 
             if p['vid_lanes']:
+                lane_tracker = job.setdefault('lane_tracker', LaneTracker())
                 left_line, right_line = detect_lanes(
-                    enh_rgb, roi_bottom=p.get('lane_roi_bottom', 1.0))
+                    enh_rgb, roi_bottom=p.get('lane_roi_bottom', 1.0),
+                    tracker=lane_tracker)
                 if left_line is not None or right_line is not None:
                     enh_rgb = draw_lanes(enh_rgb, left_line, right_line)
 

@@ -111,3 +111,21 @@ def test_all_paired_batch_matches_old_whole_batch_behavior(criterion):
 
     actual = criterion(enhanced, curves, original, target)
     assert torch.allclose(actual, expected, atol=1e-5)
+
+
+def test_spatial_consistency_loss_invariant_to_uniform_brightening():
+    """Uniformly brightening a dark image (the core goal of low-light
+    enhancement) should not be penalized by spatial_consistency_loss,
+    while scrambling its spatial structure should produce a positive loss."""
+    from src.losses import spatial_consistency_loss
+    torch.manual_seed(3)
+    original = torch.rand(2, 3, 32, 32) * 0.2
+    brightened = original + 0.5  # uniform brightness offset, identical spatial gradients
+    scrambled = torch.flip(original, dims=[2, 3])
+
+    loss_brightened = spatial_consistency_loss(brightened, original)
+    loss_scrambled = spatial_consistency_loss(scrambled, original)
+
+    assert torch.allclose(loss_brightened, torch.tensor(0.0), atol=1e-6)
+    assert loss_scrambled.item() > 1e-4
+
