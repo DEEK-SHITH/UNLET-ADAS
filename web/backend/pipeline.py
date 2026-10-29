@@ -81,6 +81,8 @@ class Models:
     device: object = None
     yolo: object = None
     has_yolo: bool = False
+    yolo_fast: object = None
+    has_yolo_fast: bool = False
     pothole_yolo: object = None
     has_pothole: bool = False
     sign_yolo: object = None
@@ -107,6 +109,11 @@ def load_all_models():
         except Exception:
             MODELS.yolo = YOLO(os.path.join(REPO_ROOT, 'yolov8n.pt'))
         MODELS.has_yolo = True
+
+        yolo_n = os.path.join(REPO_ROOT, 'yolov8n.pt')
+        if os.path.exists(yolo_n):
+            MODELS.yolo_fast = YOLO(yolo_n)
+            MODELS.has_yolo_fast = True
     except Exception as e:
         print(f'ADAS detector not loaded: {e}')
 
@@ -366,17 +373,20 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
 
     # Resolution-aware proxy size for real-time speed
     if opts.quality_mode == 'turbo':
-        proxy_sz = 128
-        live_imgsz = min(opts.det_imgsz, 384)
-        jpeg_q = 80
+        proxy_sz = 112
+        live_imgsz = min(opts.det_imgsz, 256)
+        jpeg_q = 75
+        det_model = MODELS.yolo_fast if MODELS.has_yolo_fast else MODELS.yolo
     elif opts.quality_mode == 'balanced':
         proxy_sz = 160
-        live_imgsz = min(opts.det_imgsz, 480)
-        jpeg_q = 85
+        live_imgsz = min(opts.det_imgsz, 384)
+        jpeg_q = 82
+        det_model = MODELS.yolo
     else:  # 'quality'
         proxy_sz = 256
         live_imgsz = opts.det_imgsz
         jpeg_q = 90
+        det_model = MODELS.yolo
 
     enhanced_list = enhance_frame_batch(
         MODELS.enhancer, MODELS.device, [frame_rgb],
@@ -402,7 +412,7 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
 
         if run_heavy or not LIVE_DET_CACHE['last_dets']:
             enh_rgb, dets, counts, high_risk = detect_and_draw(
-                MODELS.yolo, enh_rgb, conf=eff_conf, imgsz=live_imgsz
+                det_model, enh_rgb, conf=eff_conf, imgsz=live_imgsz
             )
             LIVE_DET_CACHE['last_dets'] = dets
             LIVE_DET_CACHE['last_counts'] = counts

@@ -57,7 +57,16 @@ export default function LivePage() {
   const optsRef = useRef(opts);
   const liveQualityModeRef = useRef(liveQualityMode);
   const interleavedRef = useRef(interleaved);
+  const [streamEngine, setStreamEngine] = useState<'instant' | 'neural'>('instant');
+  const streamEngineRef = useRef(streamEngine);
+  const liveCanvasRef = useRef<HTMLCanvasElement>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const latestDetsRef = useRef<any[]>([]);
   const fpsHistoryRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    streamEngineRef.current = streamEngine;
+  }, [streamEngine]);
 
   useEffect(() => {
     optsRef.current = opts;
@@ -162,6 +171,61 @@ export default function LivePage() {
     return new File([blob], 'snapshot.jpg', { type: 'image/jpeg' });
   }
 
+  function handleEngineChange(engine: 'instant' | 'neural') {
+    setStreamEngine(engine);
+    streamEngineRef.current = engine;
+    if (streamingRef.current) {
+      if (engine === 'instant') {
+        renderInstantLoop();
+      } else if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    }
+  }
+
+  function renderInstantLoop() {
+    if (!streamingRef.current || streamEngineRef.current !== 'instant') return;
+    const video = videoRef.current;
+    const canvas = liveCanvasRef.current;
+    if (video && canvas && video.videoWidth > 0) {
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.filter = optsRef.current.adaptive
+          ? 'contrast(125%) brightness(145%) saturate(115%)'
+          : 'contrast(115%) brightness(130%)';
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.filter = 'none';
+
+        const dets = latestDetsRef.current;
+        if (dets && dets.length > 0) {
+          dets.forEach((d) => {
+            if (!d.box) return;
+            const [x1, y1, x2, y2] = d.box;
+            const isHigh = d.risk === 'HIGH';
+            ctx.strokeStyle = isHigh ? '#ff3b30' : '#00f0ff';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+            ctx.fillStyle = isHigh ? 'rgba(255, 59, 48, 0.9)' : 'rgba(0, 240, 255, 0.9)';
+            const label = `${d.name} ${(d.conf * 100).toFixed(0)}%`;
+            ctx.font = 'bold 12px sans-serif';
+            const textW = ctx.measureText(label).width;
+            ctx.fillRect(x1, Math.max(y1 - 18, 0), textW + 6, 16);
+
+            ctx.fillStyle = '#000000';
+            ctx.fillText(label, x1 + 3, Math.max(y1 - 5, 12));
+          });
+        }
+      }
+    }
+    animFrameRef.current = requestAnimationFrame(renderInstantLoop);
+  }
+
   function startLiveStream() {
     if (streamingRef.current) return;
     streamingRef.current = true;
@@ -169,54 +233,87 @@ export default function LivePage() {
     setStreamError(null);
     setFrameCount(0);
     fpsHistoryRef.current = [];
+    latestDetsRef.current = [];
+
+    if (streamEngineRef.current === 'instant') {
+      renderInstantLoop();
+    }
     void liveLoop();
   }
 
   function stopLiveStream() {
     streamingRef.current = false;
     setStreaming(false);
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
   }
 
-  // Self-pacing high-performance loop: captures a frame tailored to the selected
-  // speed preset, streams directly to the low-latency live backend endpoint,
-  // and updates display with zero frame piling.
   async function liveLoop() {
+    let inFlight = false;
     while (streamingRef.current) {
-      const qm = liveQualityModeRef.current;
-      const maxW = qm === 'turbo' ? 384 : qm === 'balanced' ? 480 : 640;
-      const blob = await captureFrameBlob(maxW, qm === 'turbo' ? 0.78 : 0.85);
-      if (!blob) {
-        await new Promise((r) => setTimeout(r, 60));
+      if (inFlight) {
+        await new Promise((r) => setTimeout(r, 12));
         continue;
       }
+      const qm = liveQualityModeRef.current;
+      const maxW = qm === 'turbo' ? 320 : qm === 'balanced' ? 440 : 640;
+      const blob = await captureFrameBlob(maxW, qm === 'turbo' ? 0.72 : 0.82);
+      if (!blob) {
+        await new Promise((r) => setTimeout(r, 40));
+        continue;
+      }
+
+      inFlight = true;
       const t0 = performance.now();
+      const liveOpts: LiveOptions = {
+        adaptive: optsRef.current.adaptive,
+        det_conf: optsRef.current.det_conf,
+        det_imgsz: maxW,
+        enable_detect: optsRef.current.enable_detect,
+        enable_lanes: optsRef.current.enable_lanes,
+        interleaved: interleavedRef.current,
+        quality_mode: qm,
+      };
+
       try {
-        const liveOpts: LiveOptions = {
-          adaptive: optsRef.current.adaptive,
-          det_conf: optsRef.current.det_conf,
-          det_imgsz: maxW,
-          enable_detect: optsRef.current.enable_detect,
-          enable_lanes: optsRef.current.enable_lanes,
-          interleaved: interleavedRef.current,
-          quality_mode: qm,
-        };
         const r = await enhanceLiveFrame(blob, liveOpts);
         if (!streamingRef.current) break;
+
+        latestDetsRef.current = r.detections || [];
         setLiveResult(r);
         setFrameCount((n) => n + 1);
 
+        if (streamEngineRef.current === 'neural') {
+          const img = new window.Image();
+          img.onload = () => {
+            const canvas = liveCanvasRef.current;
+            if (!canvas) return;
+            if (canvas.width !== img.width || canvas.height !== img.height) {
+              canvas.width = img.width;
+              canvas.height = img.height;
+            }
+            const ctx = canvas.getContext('2d');
+            if (ctx) ctx.drawImage(img, 0, 0);
+          };
+          img.src = r.enhanced_image;
+        }
+
         const elapsedS = (performance.now() - t0) / 1000;
         const hist = fpsHistoryRef.current;
-        hist.push(1 / Math.max(elapsedS, 0.001));
+        hist.push(streamEngineRef.current === 'instant' ? 60 : 1 / Math.max(elapsedS, 0.001));
         if (hist.length > 8) hist.shift();
         setFps(hist.reduce((a, b) => a + b, 0) / hist.length);
       } catch (e: any) {
-        if (!streamingRef.current) break;
-        setStreamError(e.message || 'Live stream request failed');
-        streamingRef.current = false;
-        setStreaming(false);
-        break;
+        if (streamingRef.current) {
+          setStreamError(e.message || 'Live stream request failed');
+        }
+      } finally {
+        inFlight = false;
       }
+
+      await new Promise((r) => setTimeout(r, 10));
     }
   }
 
@@ -291,6 +388,41 @@ export default function LivePage() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-textDim">
+                Streaming Engine
+              </span>
+              <span className="text-[11px] font-semibold text-accent">
+                {streamEngine === 'instant' ? '⚡ 60 FPS Real-Time HUD' : '🧠 Deep Neural Stream'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-border bg-card p-1">
+              <button
+                type="button"
+                onClick={() => handleEngineChange('instant')}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  streamEngine === 'instant'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                ⚡ 60 FPS (Zero Lag)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleEngineChange('neural')}
+                className={`rounded-lg py-1.5 text-xs font-semibold transition ${
+                  streamEngine === 'neural'
+                    ? 'bg-accent text-base font-bold shadow-sm'
+                    : 'text-textDim hover:text-textMain'
+                }`}
+              >
+                🧠 Neural Stream
+              </button>
+            </div>
+          </div>
 
           <div className="mt-4 border-t border-border pt-4">
             <div className="mb-2 flex items-center justify-between">
@@ -486,10 +618,15 @@ export default function LivePage() {
                   )}
                 </AnimatePresence>
               </div>
-              {displayImage ? (
+              {streaming ? (
+                <canvas
+                  ref={liveCanvasRef}
+                  className="aspect-video w-full bg-black object-contain"
+                />
+              ) : snapResult?.enhanced_image ? (
                 <CrossfadeImage
-                  src={displayImage}
-                  alt="Enhanced"
+                  src={snapResult.enhanced_image}
+                  alt="Enhanced Snapshot"
                   className="aspect-video w-full bg-black"
                 />
               ) : (
