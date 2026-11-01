@@ -106,23 +106,24 @@ def _plausible_traffic_light_shape(x1, y1, x2, y2):
     return (w / h) <= 0.75
 
 
-def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h):
+def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0):
     """
-    Resolves false 'Bus' or 'Truck' classifications on passenger cars in front of
-    the ego vehicle. When a car's rear, roofline, or hood is close and truncated
-    at the bottom edge of a dashcam frame, its aspect ratio becomes wide, confusing
-    YOLO into predicting 'Bus'. If the box is truncated near the bottom and has
-    car-like proportions (height < 45% of frame height), it is reclassified as 'Car'.
+    Resolves false 'Bus' or 'Truck' classifications on cropped passenger cars in front
+    of the ego vehicle. When a car's rear, roofline, or hood is immediately adjacent to the ego
+    hood and physically truncated at the very bottom edge of a dashcam frame (y2 >= 88% frame_h),
+    its extreme horizontal aspect ratio (width >= 2.8 * height) can mislead YOLO with marginal confidence
+    into predicting 'Bus'.
+
+    Legitimate buses and trucks driving down the road (even when distant, small in height, or
+    detected with high confidence) are strictly preserved as Bus / Truck.
     """
     box_w = x2 - x1
     box_h = y2 - y1
     if name in ('Bus', 'Truck'):
-        # In dashcam views, a vehicle whose bottom touches the lower frame with
-        # height < 45% of frame and wide aspect ratio is a passenger car.
-        if y2 >= 0.70 * frame_h and box_h <= 0.45 * frame_h and box_w >= 1.2 * box_h:
-            return 'Car'
-        # Any box of small absolute height (< 22% frame height) is not a massive bus/truck
-        if box_h < 0.22 * frame_h:
+        is_bottom_truncated = (y2 >= 0.88 * frame_h)
+        is_flat_slice = (box_h > 0 and box_w >= 2.8 * box_h)
+        is_marginal_conf = (conf < 0.50)
+        if is_bottom_truncated and is_flat_slice and is_marginal_conf:
             return 'Car'
     return name
 
@@ -334,7 +335,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         else:
             if conf_s < conf:
                 continue
-            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
             raw_candidates.append({
                 'name': name,
                 'conf': round(conf_s, 3),
@@ -414,7 +415,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         else:
             if conf_s < conf:
                 continue
-            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
             track_id = int(ids[i]) if ids is not None else None
             raw_candidates.append({
                 'name': name,

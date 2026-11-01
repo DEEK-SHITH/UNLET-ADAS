@@ -126,3 +126,21 @@ def test_web_pipeline_cleanup_old_jobs_removes_expired(tmp_path):
     assert not out_file.exists()
     assert 'active456' in pl.JOBS
     pl.JOBS.clear()
+
+
+def test_disambiguate_vehicle_class():
+    from src.detection import _disambiguate_vehicle_class
+    frame_w, frame_h = 720, 1280
+
+    # 1. Distant / mid-range bus driving on road (height < 22% frame_h, but not bottom truncated)
+    # y2 = 800, box_h = 160 -> should remain Bus
+    assert _disambiguate_vehicle_class('Bus', 200, 640, 400, 800, frame_w, frame_h, conf=0.85) == 'Bus'
+    assert _disambiguate_vehicle_class('Truck', 200, 640, 400, 800, frame_w, frame_h, conf=0.72) == 'Truck'
+
+    # 2. Bottom-truncated passenger car roofline (hood/rear right at ego front) with marginal confidence (< 0.50)
+    # y2 = 1200 >= 0.88 * 1280 (1126.4), w = 500, h = 100 (w/h = 5.0 >= 2.8), conf = 0.35
+    assert _disambiguate_vehicle_class('Bus', 100, 1100, 600, 1200, frame_w, frame_h, conf=0.35) == 'Car'
+    assert _disambiguate_vehicle_class('Truck', 100, 1100, 600, 1200, frame_w, frame_h, conf=0.40) == 'Car'
+
+    # 3. High-confidence bus even near bottom edge stays Bus
+    assert _disambiguate_vehicle_class('Bus', 50, 800, 650, 1200, frame_w, frame_h, conf=0.88) == 'Bus'
