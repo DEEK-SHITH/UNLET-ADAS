@@ -42,6 +42,7 @@ export interface ImageResult {
   processing_ms: number;
   original_image: string;
   enhanced_image: string;
+  comparison_image?: string;
 }
 
 export interface AppConfig {
@@ -62,6 +63,7 @@ export interface JobStatus {
   counts: Record<string, number>;
   high_risk: boolean;
   ready: boolean;
+  has_comparison?: boolean;
 }
 
 export interface ImageOptions {
@@ -183,6 +185,6 @@ export async function cancelJob(jobId: string): Promise<void> {
   await fetch(`${getApiUrl()}/api/jobs/${jobId}/cancel`, { method: 'POST' });
 }
 
-export function jobVideoUrl(jobId: string): string {
-  return `${getApiUrl()}/api/jobs/${jobId}/video`;
+export function jobVideoUrl(jobId: string, mode: 'enhanced' | 'comparison' = 'enhanced'): string {
+  return `${getApiUrl()}/api/jobs/${jobId}/video?mode=${mode}`;
 }

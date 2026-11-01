@@ -8,6 +8,7 @@ vision pipeline.
 """
 import hashlib
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -22,6 +23,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 APP_DIR = os.path.join(REPO_ROOT, 'app')
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+os.environ.setdefault('YOLO_OFFLINE', 'true')
 
 from src.detection import (  # noqa: E402
     ADAS_CLASSES,
@@ -35,6 +37,7 @@ from src.detection import (  # noqa: E402
     estimate_risk_depth,
     estimate_risk_geometry,
     redraw_cached_detections,
+    sharpen_frame,
     track_and_draw,
 )
 from src.enhance import (  # noqa: E402
@@ -59,6 +62,38 @@ _SIGN_PALETTE = [
 ]
 
 
+def _draw_header_badge(img, text, origin, bg_color, text_color, dot_color=None):
+    """Draws an elegant, modern pill badge onto comparison composite frames."""
+    x, y = origin
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
+    pad_x, pad_y = 10, 6
+    dot_space = 14 if dot_color else 0
+    bx1, by1 = x - pad_x, y - th - pad_y
+    bx2, by2 = x + tw + pad_x + dot_space, y + pad_y
+    cv2.rectangle(img, (bx1, by1), (bx2, by2), bg_color, -1)
+    cv2.rectangle(img, (bx1, by1), (bx2, by2), (60, 60, 60), 1)
+    if dot_color:
+        cv2.circle(img, (x + 2, y - th // 2), 4, dot_color, -1)
+        cv2.putText(img, text, (x + dot_space + 2, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, text_color, 1, cv2.LINE_AA)
+    else:
+        cv2.putText(img, text, (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, text_color, 1, cv2.LINE_AA)
+
+
+def _compose_comparison_frame(orig_bgr, enh_bgr):
+    """Creates a high-resolution side-by-side comparison frame with status badges."""
+    h, w = orig_bgr.shape[:2]
+    if enh_bgr.shape[:2] != (h, w):
+        enh_bgr = cv2.resize(enh_bgr, (w, h))
+    comp = np.hstack([orig_bgr, enh_bgr])
+    _draw_header_badge(comp, 'ORIGINAL INPUT', (18, 28),
+                       (25, 25, 25), (220, 220, 220), dot_color=(0, 0, 220))
+    _draw_header_badge(comp, 'UNLET-ADAS ENHANCED', (w + 18, 28),
+                       (20, 32, 24), (100, 255, 180), dot_color=(0, 220, 100))
+    return comp
+
+
 def detect_signs(sign_yolo, image_rgb, conf, imgsz):
     results = sign_yolo(image_rgb, conf=conf, imgsz=imgsz, verbose=False)[0]
     out = []
@@ -70,7 +105,7 @@ def detect_signs(sign_yolo, image_rgb, conf, imgsz):
         color = _SIGN_PALETTE[digest[0] % len(_SIGN_PALETTE)]
         cv2.rectangle(image_rgb, (x1, y1), (x2, y2), color, 2)
         cv2.putText(image_rgb, f'{cls_name} {conf_s:.0%}', (x1, max(y1 - 8, 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2)
         out.append({'name': str(cls_name), 'conf': round(conf_s, 3), 'box': [x1, y1, x2, y2]})
     return image_rgb, out
 
@@ -160,16 +195,16 @@ class ImageOptions:
 
 
 def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
-    """Full enhance + detect pipeline for a single image."""
+    """Full enhance + detect pipeline for a single image with side-by-side composite."""
     t0 = time.time()
     orig_rgb = np.array(pil_image.convert('RGB'))
-    orig_luminance = float(orig_rgb.astype(np.float32).mean() / 255)
+    orig_lum = float(orig_rgb[::16, ::16].mean() / 255.0)
 
     enhanced_list = enhance_frame_batch(
         MODELS.enhancer, MODELS.device, [orig_rgb], size=256, adaptive=opts.adaptive)
     enh_rgb = enhanced_list[0]
 
-    eff_conf = scene_aware_conf(opts.det_conf, orig_luminance, night_boost=0.05)
+    eff_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
 
     depth_map = None
     if opts.use_depth_risk and ensure_depth_model():
@@ -177,10 +212,10 @@ def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
         depth_map = estimate_depth_map(MODELS.midas_model, MODELS.midas_transform,
                                         MODELS.device, enh_rgb)
 
-    enh_luminance = float(enh_rgb.astype(np.float32).mean() / 255)
+    enh_lum = float(enh_rgb[::16, ::16].mean() / 255.0)
     result = {
-        'brightness': round(orig_luminance, 4),
-        'enhanced_brightness': round(enh_luminance, 4),
+        'brightness': round(orig_lum, 4),
+        'enhanced_brightness': round(enh_lum, 4),
         'effective_confidence': round(eff_conf, 4),
         'detections': [], 'potholes': [], 'signs': [],
         'counts': {}, 'high_risk': False,
@@ -196,12 +231,12 @@ def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
 
     if opts.enable_pothole and MODELS.has_pothole:
         enh_rgb, potholes = detect_single_class(
-            MODELS.pothole_yolo, enh_rgb, eff_conf, opts.det_imgsz,
-            'Pothole', (255, 165, 0))
+            MODELS.pothole_yolo, enh_rgb, max(eff_conf, 0.30), opts.det_imgsz,
+            'Pothole', (255, 165, 0), min_y_ratio=0.35)
         result['potholes'] = potholes
 
     if opts.enable_signs and MODELS.has_signs:
-        enh_rgb, signs = detect_signs(MODELS.sign_yolo, enh_rgb, eff_conf, opts.det_imgsz)
+        enh_rgb, signs = detect_signs(MODELS.sign_yolo, enh_rgb, max(eff_conf, 0.35), opts.det_imgsz)
         result['signs'] = signs
 
     if opts.enable_detect and MODELS.has_yolo:
@@ -211,11 +246,15 @@ def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
         result['counts'] = counts
         result['high_risk'] = high_risk
 
+    # Compose side-by-side comparison image
+    orig_bgr = cv2.cvtColor(orig_rgb, cv2.COLOR_RGB2BGR)
+    enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
+    comp_bgr = _compose_comparison_frame(orig_bgr, enh_bgr)
+    result['comparison_rgb'] = cv2.cvtColor(comp_bgr, cv2.COLOR_BGR2RGB)
+
     result['processing_ms'] = round((time.time() - t0) * 1000, 1)
     return enh_rgb, result
 
-
-import subprocess
 
 # Optimize PyTorch CPU multi-threading
 try:
@@ -233,11 +272,12 @@ class DirectFFmpegVideoWriter:
     Writes single-pass, browser-compatible H.264 with +faststart.
     """
     def __init__(self, output_path: str, width: int, height: int, fps: float,
-                 crf: int = 20, preset: str = 'veryfast'):
+                 crf: int = 18, preset: str = 'veryfast'):
+        # Ensure dimensions are strictly even for H.264 / yuv420p
+        self.width = width if width % 2 == 0 else width - 1
+        self.height = height if height % 2 == 0 else height - 1
         self.output_path = output_path
-        self.width = width
-        self.height = height
-        self.fps = fps
+        self.fps = round(float(fps), 2)
         self.crf = crf
         self.preset = preset
         self.proc = None
@@ -277,6 +317,9 @@ class DirectFFmpegVideoWriter:
             )
 
     def write(self, frame_bgr):
+        h, w = frame_bgr.shape[:2]
+        if w != self.width or h != self.height:
+            frame_bgr = cv2.resize(frame_bgr, (self.width, self.height))
         if self.proc and self.proc.stdin:
             try:
                 self.proc.stdin.write(frame_bgr.tobytes())
@@ -308,6 +351,8 @@ class VideoJob:
     frames_done: int = 0
     frames_total: int = 0
     output_path: Optional[str] = None
+    comparison_path: Optional[str] = None
+    has_comparison: bool = False
     input_path: Optional[str] = None
     error: Optional[str] = None
     cancel_requested: bool = False
@@ -329,9 +374,9 @@ class VideoOptions:
     enable_signs: bool = False
     enable_lanes: bool = False
     use_depth_risk: bool = False
-    fast_mode: bool = True          # detect every 2nd frame, like the Streamlit Video tab
-    max_frames: int = 900           # ~30s at 30fps safety cap for the demo API
-    batch_size: int = 4
+    fast_mode: bool = True          # Stride detection across frames for high throughput
+    max_frames: int = 900           # ~30s at 30fps safety cap for demo
+    batch_size: int = 6
     quality_preset: str = 'high'    # turbo | high | ultra
 
 
@@ -343,7 +388,7 @@ class LiveOptions:
     enable_detect: bool = True
     enable_lanes: bool = False
     interleaved: bool = True
-    quality_mode: str = 'turbo'     # turbo (384p, ~15-20 FPS) | balanced (480p, ~10-15 FPS) | quality (640p)
+    quality_mode: str = 'turbo'     # turbo (384p) | balanced (480p) | quality (640p)
 
 
 LIVE_DET_CACHE = {
@@ -355,13 +400,7 @@ LIVE_DET_CACHE = {
 
 
 def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dict]:
-    """
-    Ultra-low-latency enhancement + perception for live camera feeds.
-    - Decodes direct from memory buffer (avoids PIL / file IO)
-    - Zero-DCE proxy tailored to live quality mode
-    - Interleaved YOLO detection for 2x-3x higher FPS
-    - Encodes enhanced frame directly to JPEG (avoids base64 overhead)
-    """
+    """Ultra-low-latency enhancement + perception for live camera feeds."""
     t0 = time.time()
     nparr = np.frombuffer(image_bytes, np.uint8)
     frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -369,18 +408,18 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
         raise ValueError("Could not decode image frame")
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    orig_lum = float(frame_rgb.astype(np.float32).mean() / 255)
+    orig_lum = float(frame_rgb[::16, ::16].mean() / 255.0)
 
     # Resolution-aware proxy size for real-time speed
     if opts.quality_mode == 'turbo':
-        proxy_sz = 112
-        live_imgsz = min(opts.det_imgsz, 256)
-        jpeg_q = 75
+        proxy_sz = 128
+        live_imgsz = min(opts.det_imgsz, 288)
+        jpeg_q = 78
         det_model = MODELS.yolo_fast if MODELS.has_yolo_fast else MODELS.yolo
     elif opts.quality_mode == 'balanced':
-        proxy_sz = 160
+        proxy_sz = 192
         live_imgsz = min(opts.det_imgsz, 384)
-        jpeg_q = 82
+        jpeg_q = 85
         det_model = MODELS.yolo
     else:  # 'quality'
         proxy_sz = 256
@@ -393,7 +432,7 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
         size=proxy_sz, adaptive=opts.adaptive
     )
     enh_rgb = enhanced_list[0]
-    enh_lum = float(enh_rgb.astype(np.float32).mean() / 255)
+    enh_lum = float(enh_rgb[::16, ::16].mean() / 255.0)
 
     dets = []
     counts = {}
@@ -406,9 +445,8 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
 
     if opts.enable_detect and MODELS.has_yolo:
         LIVE_DET_CACHE['frame_idx'] += 1
-        # In interleaved mode, detect on odd frames, use fast redrawing on even frames
         run_heavy = (not opts.interleaved) or (LIVE_DET_CACHE['frame_idx'] % 2 == 1)
-        eff_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.05)
+        eff_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
 
         if run_heavy or not LIVE_DET_CACHE['last_dets']:
             enh_rgb, dets, counts, high_risk = detect_and_draw(
@@ -427,7 +465,6 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
         LIVE_DET_CACHE['last_counts'] = {}
         LIVE_DET_CACHE['last_high_risk'] = False
 
-    # Fast JPEG encode of enhanced frame
     ok, buf = cv2.imencode('.jpg', cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, jpeg_q])
     encoded_bytes = buf.tobytes() if ok else b''
 
@@ -457,7 +494,7 @@ def cleanup_old_jobs(max_age_sec: float = 3600.0):
         j = JOBS.pop(jid, None)
         if not j:
             continue
-        for p in (j.input_path, j.output_path):
+        for p in (j.input_path, j.output_path, getattr(j, 'comparison_path', None)):
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -473,15 +510,18 @@ def new_job() -> VideoJob:
 
 
 def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOptions):
-    """Runs inside a background worker thread.
-    Enhances frames in batches, tracks objects with ByteTrack to report
-    unique object counts rather than inflating counts across frames,
-    and streams directly to a single-pass H.264 FFmpeg pipe for maximum speed and quality."""
+    """
+    Optimized background video processing engine:
+    1. Batched Zero-DCE curve estimation with 256px resolution for maximum edge fidelity.
+    2. Single-pass dual H.264 FFmpeg streaming for BOTH enhanced-only and side-by-side comparison videos.
+    3. Strided heavy detection with ByteTrack tracking for 2x-3x speedup.
+    4. Adaptive unsharp mask detail enhancement preventing video blur.
+    """
     job = JOBS[job_id]
     job.input_path = input_path
     job.status = 'processing'
     cap = cv2.VideoCapture(input_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -490,25 +530,30 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     # Determine processing speed vs quality trade-offs based on preset
     qp = getattr(opts, 'quality_preset', 'high')
     if qp == 'turbo':
-        crf = 22
-        proxy_sz = 128
+        crf = 20
+        proxy_sz = 160
         eff_imgsz = min(opts.det_imgsz, 480)
         eff_fast_mode = True
+        det_stride = 3
     elif qp == 'ultra':
-        crf = 18
+        crf = 17
         proxy_sz = 256
         eff_imgsz = opts.det_imgsz
         eff_fast_mode = False
+        det_stride = 1
     else:  # 'high' (default)
-        crf = 20
-        proxy_sz = 192
+        crf = 18
+        proxy_sz = 256
         eff_imgsz = opts.det_imgsz
         eff_fast_mode = opts.fast_mode
+        det_stride = 2 if eff_fast_mode else 1
 
     out_path = os.path.join(output_dir, f'{job_id}_enhanced.mp4')
-    # Use direct-to-ffmpeg pipe: writes browser-compatible H.264 with +faststart
-    # in a single pass, completely bypassing the slow second transcode step!
+    comp_path = os.path.join(output_dir, f'{job_id}_comparison.mp4')
+
+    # Dual single-pass FFmpeg writers
     writer = DirectFFmpegVideoWriter(out_path, W, H, fps, crf=crf, preset='veryfast')
+    writer_comp = DirectFFmpegVideoWriter(comp_path, W * 2, H, fps, crf=crf, preset='veryfast')
 
     has_depth = ensure_depth_model() if opts.use_depth_risk else False
     lane_tracker = LaneTracker() if opts.enable_lanes else None
@@ -517,11 +562,12 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     last_det_list = []
     last_pot_boxes = []
     last_sign_boxes = []
+    last_depth_map = None
     seen_track_ids_by_class: dict[str, set[int]] = {}
     peak_untracked_by_class: dict[str, int] = {}
     proc_idx = 0
     count = 0
-    batch_size = max(1, int(opts.batch_size))
+    batch_size = max(2, min(int(opts.batch_size), 8))
 
     try:
         while count < job.frames_total:
@@ -555,9 +601,9 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                     job.status = 'cancelled'
                     break
 
-                run_heavy = (not eff_fast_mode) or (proc_idx % 2 == 0)
-                orig_lum = orig_bgr.astype(np.float32).mean() / 255
-                frame_conf = scene_aware_conf(opts.det_conf, orig_lum)
+                run_heavy = (not eff_fast_mode) or (proc_idx % det_stride == 0)
+                orig_lum = float(orig_bgr[::16, ::16].mean() / 255.0)
+                frame_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
 
                 if opts.enable_lanes:
                     left, right = detect_lanes(
@@ -570,20 +616,24 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                 if opts.enable_pothole and MODELS.has_pothole:
                     if run_heavy or not last_pot_boxes:
                         pot_res = MODELS.pothole_yolo(
-                            enh_rgb, conf=frame_conf, imgsz=eff_imgsz, verbose=False)[0]
-                        last_pot_boxes = [
-                            (*map(int, box.xyxy[0]), float(box.conf[0]))
-                            for box in pot_res.boxes
-                        ]
+                            enh_rgb, conf=max(frame_conf, 0.30), imgsz=eff_imgsz, verbose=False)[0]
+                        last_pot_boxes = []
+                        h_enh = enh_rgb.shape[0]
+                        for box in pot_res.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            # Restrict pothole to roadway surface
+                            if y2 >= int(h_enh * 0.35):
+                                last_pot_boxes.append((x1, y1, x2, y2, float(box.conf[0])))
+
                     for x1, y1, x2, y2, pconf in last_pot_boxes:
                         cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), (255, 165, 0), 2)
                         cv2.putText(enh_rgb, f'Pothole {pconf:.0%}', (x1, max(y1 - 8, 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 2)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 165, 0), 2)
 
                 if opts.enable_signs and MODELS.has_signs:
                     if run_heavy or not last_sign_boxes:
                         sign_res = MODELS.sign_yolo(
-                            enh_rgb, conf=frame_conf, imgsz=eff_imgsz, verbose=False)[0]
+                            enh_rgb, conf=max(frame_conf, 0.35), imgsz=eff_imgsz, verbose=False)[0]
                         last_sign_boxes = [
                             (*map(int, box.xyxy[0]), float(box.conf[0]),
                              sign_res.names[int(box.cls[0])])
@@ -594,15 +644,17 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                         color = _SIGN_PALETTE[digest[0] % len(_SIGN_PALETTE)]
                         cv2.rectangle(enh_rgb, (x1, y1), (x2, y2), color, 2)
                         cv2.putText(enh_rgb, f'{cls_name} {sconf:.0%}', (x1, max(y1 - 8, 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2)
 
                 if opts.enable_detect and MODELS.has_yolo:
                     depth_map = None
-                    if run_heavy and opts.use_depth_risk and has_depth:
-                        from src.depth import estimate_depth_map
-                        depth_map = estimate_depth_map(
-                            MODELS.midas_model, MODELS.midas_transform,
-                            MODELS.device, enh_rgb)
+                    if opts.use_depth_risk and has_depth:
+                        if proc_idx % 4 == 0 or last_depth_map is None:
+                            from src.depth import estimate_depth_map
+                            last_depth_map = estimate_depth_map(
+                                MODELS.midas_model, MODELS.midas_transform,
+                                MODELS.device, enh_rgb)
+                        depth_map = last_depth_map
 
                     if run_heavy or not last_det_list:
                         try:
@@ -615,6 +667,7 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                              frame_risk) = detect_and_draw(
                                 MODELS.yolo, enh_rgb, conf=frame_conf,
                                 imgsz=eff_imgsz, depth_map=depth_map)
+
                         job.high_risk = job.high_risk or frame_risk
                         for d in last_det_list:
                             tid = d.get('track_id')
@@ -636,15 +689,19 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                         enh_rgb = redraw_cached_detections(enh_rgb, last_det_list)
 
                 proc_idx += 1
-                writer.write(cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR))
+                enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
+                writer.write(enh_bgr)
+                comp_frame = _compose_comparison_frame(orig_bgr, enh_bgr)
+                writer_comp.write(comp_frame)
 
             job.frames_done = count
             job.progress = int(100 * count / max(job.frames_total, 1))
 
         cap.release()
         writer.release()
+        writer_comp.release()
 
-        if os.path.exists(input_path):
+        if os.path.exists(input_path) and ('unlet_adas_api_' in input_path or 'tmp' in input_path.lower()):
             try:
                 os.remove(input_path)
             except OSError:
@@ -653,27 +710,26 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
         if job.status != 'cancelled':
             if getattr(writer, 'needs_transcode', False):
                 transcode_for_browser(out_path, crf=crf)
+            if getattr(writer_comp, 'needs_transcode', False):
+                transcode_for_browser(comp_path, crf=crf)
             job.output_path = out_path
+            job.comparison_path = comp_path
+            job.has_comparison = True
             job.status = 'done'
             job.progress = 100
-        elif os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except OSError:
-                pass
+        else:
+            for p in (out_path, comp_path):
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
     except Exception as e:
         job.status = 'error'
         job.error = str(e)
         try:
             cap.release()
             writer.release()
-        except Exception:
-            pass
-    except Exception as e:
-        job.status = 'error'
-        job.error = str(e)
-        try:
-            cap.release()
-            writer.release()
+            writer_comp.release()
         except Exception:
             pass

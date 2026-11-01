@@ -86,15 +86,14 @@ def _apply_proxy_curves_fast(
         curves_proxy.shape[2] == target_size[0]
         and curves_proxy.shape[3] == target_size[1]
     )
-    for i in range(num_iters):
-        A_small = curves_proxy[:, i * 3 : (i + 1) * 3]
-        A = (
-            A_small
-            if same_size
-            else F.interpolate(
-                A_small, size=target_size, mode='bilinear', align_corners=False
-            )
+    if same_size:
+        A_all = curves_proxy
+    else:
+        A_all = F.interpolate(
+            curves_proxy, size=target_size, mode='bilinear', align_corners=False
         )
+    for i in range(num_iters):
+        A = A_all[:, i * 3 : (i + 1) * 3]
         enhanced = torch.addcmul(enhanced, A, enhanced * (1.0 - enhanced)).clamp_(0.0, 1.0)
     return enhanced
 

@@ -111,6 +111,8 @@ async def enhance_image(
     enh_rgb, result = pl.run_image_pipeline(pil_image, opts)
     result['original_image'] = _rgb_to_data_url(np.array(pil_image))
     result['enhanced_image'] = _rgb_to_data_url(enh_rgb)
+    if 'comparison_rgb' in result:
+        result['comparison_image'] = _rgb_to_data_url(result.pop('comparison_rgb'))
     return result
 
 
@@ -202,6 +204,7 @@ def job_status(job_id: str):
         'frames_done': job.frames_done, 'frames_total': job.frames_total,
         'error': job.error, 'counts': job.counts, 'high_risk': job.high_risk,
         'ready': job.status == 'done',
+        'has_comparison': bool(job.comparison_path and os.path.exists(job.comparison_path)),
     }
 
 
@@ -215,12 +218,21 @@ def cancel_job(job_id: str):
 
 
 @app.get('/api/jobs/{job_id}/video')
-def job_video(job_id: str):
+def job_video(job_id: str, mode: str = 'enhanced'):
     job = pl.JOBS.get(job_id)
-    if not job or job.status != 'done' or not job.output_path:
+    if not job or job.status != 'done':
         raise HTTPException(404, 'Video not ready')
-    return FileResponse(job.output_path, media_type='video/mp4',
-                         filename=f'unlet_adas_enhanced_{job_id}.mp4')
+    if mode == 'comparison' and job.comparison_path and os.path.exists(job.comparison_path):
+        return FileResponse(
+            job.comparison_path, media_type='video/mp4',
+            filename=f'unlet_adas_comparison_{job_id}.mp4'
+        )
+    if not job.output_path or not os.path.exists(job.output_path):
+        raise HTTPException(404, 'Video not ready')
+    return FileResponse(
+        job.output_path, media_type='video/mp4',
+        filename=f'unlet_adas_enhanced_{job_id}.mp4'
+    )
 
 
 # When deployed as a unified container (Dockerfile.web), serve the

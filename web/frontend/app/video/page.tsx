@@ -35,6 +35,7 @@ export default function VideoPage() {
   const [file, setFile] = useState<File | null>(null);
   const [opts, setOpts] = useState<VideoOptions>(DEFAULT_OPTS);
   const [job, setJob] = useState<JobStatus | null>(null);
+  const [videoMode, setVideoMode] = useState<'enhanced' | 'comparison'>('enhanced');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -317,20 +318,63 @@ export default function VideoPage() {
                     animate={{ opacity: 1 }}
                     className="mt-2"
                   >
+                    {/* View mode switcher */}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/80 bg-card/70 px-3 py-2">
+                      <div className="flex items-center gap-1 rounded-lg border border-border bg-base/70 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setVideoMode('enhanced')}
+                          className={`rounded-md px-3 py-1 text-xs font-bold transition ${
+                            videoMode === 'enhanced'
+                              ? 'bg-accent text-base shadow-glow'
+                              : 'text-textDim hover:text-textMain'
+                          }`}
+                        >
+                          🎬 Enhanced Video
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setVideoMode('comparison')}
+                          className={`rounded-md px-3 py-1 text-xs font-bold transition ${
+                            videoMode === 'comparison'
+                              ? 'bg-accent text-base shadow-glow'
+                              : 'text-textDim hover:text-textMain'
+                          }`}
+                        >
+                          ◫ Side-by-Side Comparison
+                        </button>
+                      </div>
+                      <span className="font-mono text-xs text-textDim">
+                        {videoMode === 'comparison'
+                          ? 'Split View: Original (Left) | Enhanced + HUD (Right)'
+                          : 'Full Frame: UNLET-ADAS Enhanced + ADAS HUD'}
+                      </span>
+                    </div>
+
                     <video
-                      src={jobVideoUrl(job.id)}
+                      key={videoMode}
+                      src={jobVideoUrl(job.id, videoMode)}
                       controls
-                      className="w-full rounded-xl border border-border bg-black"
+                      className="w-full rounded-xl border border-border bg-black shadow-lg"
                     />
                     <div className="mt-3 flex flex-wrap items-center gap-3">
                       <motion.a
                         whileHover={{ scale: 1.03 }}
                         whileTap={{ scale: 0.97 }}
-                        href={jobVideoUrl(job.id)}
-                        download
-                        className="rounded-xl bg-accent-gradient px-4 py-2 text-sm font-bold text-base shadow-glow"
+                        href={jobVideoUrl(job.id, 'enhanced')}
+                        download={`unlet_adas_enhanced_${job.id}.mp4`}
+                        className="flex items-center gap-1.5 rounded-xl bg-accent-gradient px-4 py-2 text-sm font-bold text-base shadow-glow"
                       >
-                        Download enhanced video
+                        ⬇ Download Enhanced Video
+                      </motion.a>
+                      <motion.a
+                        whileHover={{ scale: 1.03 }}
+                        whileTap={{ scale: 0.97 }}
+                        href={jobVideoUrl(job.id, 'comparison')}
+                        download={`unlet_adas_comparison_${job.id}.mp4`}
+                        className="flex items-center gap-1.5 rounded-xl border border-accent/40 bg-card2 px-4 py-2 text-sm font-bold text-accent shadow-sm transition hover:bg-accent/15"
+                      >
+                        ◫ Download Side-by-Side Video
                       </motion.a>
                       {job.high_risk && (
                         <span className="rounded-full border border-danger/30 bg-danger/10 px-3 py-1 text-xs font-semibold text-danger">

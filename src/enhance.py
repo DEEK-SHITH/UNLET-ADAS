@@ -145,7 +145,8 @@ def enhance_pil(model, device, pil_image, adaptive=True, proxy_size=256):
 
     enh_np = (enh_full[0].permute(1, 2, 0).cpu().numpy()
               * 255).clip(0, 255).astype(np.uint8)
-    enh_np = correct_color_cast(enh_np)
+    from src.detection import sharpen_frame
+    enh_np = sharpen_frame(correct_color_cast(enh_np), amount=0.25)
     return Image.fromarray(enh_np)
 
 
@@ -182,7 +183,8 @@ def enhance_frame_batch(model, device, frames_rgb,
     enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
 
     if adaptive:
-        lum    = t_full.mean(dim=[1, 2, 3])
+        # Fast strided subsample for luminance estimate
+        lum    = t_full[:, :, ::16, ::16].mean(dim=[1, 2, 3])
         alphas = torch.tensor(
             [scene_blend_weight(float(l)) for l in lum],
             device=device).view(-1, 1, 1, 1)
@@ -191,7 +193,8 @@ def enhance_frame_batch(model, device, frames_rgb,
     out = (enh_full.permute(0, 2, 3, 1).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
 
-    return [correct_color_cast(frame) for frame in out]
+    from src.detection import sharpen_frame
+    return [sharpen_frame(correct_color_cast(frame), amount=0.25) for frame in out]
 
 
 def transcode_for_browser(path, crf=23, preset='veryfast', timeout=300):

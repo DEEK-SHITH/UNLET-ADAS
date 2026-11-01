@@ -279,6 +279,7 @@ export default function ImagePage() {
               <CompareView
                 before={result.original_image}
                 after={result.enhanced_image}
+                comparisonImage={result.comparison_image}
                 origBrightness={result.brightness}
                 enhBrightness={result.enhanced_brightness}
                 objectCount={result.detections.length}

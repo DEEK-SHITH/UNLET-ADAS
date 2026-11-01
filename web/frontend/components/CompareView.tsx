@@ -11,12 +11,14 @@ export default function CompareView({
   origBrightness,
   enhBrightness,
   objectCount,
+  comparisonImage,
 }: {
   before: string;
   after: string;
   origBrightness?: number;
   enhBrightness?: number;
   objectCount?: number;
+  comparisonImage?: string;
 }) {
   const [mode, setMode] = useState<ViewMode>('side-by-side');
   const [zoomEnabled, setZoomEnabled] = useState(false);
@@ -112,6 +114,15 @@ export default function CompareView({
           >
             ⬇ Download Enhanced
           </a>
+          {comparisonImage && (
+            <a
+              href={comparisonImage}
+              download="unlet_adas_comparison.jpg"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-card2 px-3 py-1 text-xs font-bold text-textMain transition hover:border-accent hover:text-accent"
+            >
+              ◫ Download Side-by-Side
+            </a>
+          )}
         </div>
       </div>
 
