@@ -413,26 +413,35 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
     # Resolution-aware proxy size for real-time speed
     if opts.quality_mode == 'turbo':
         proxy_sz = 128
-        live_imgsz = min(opts.det_imgsz, 288)
-        jpeg_q = 78
+        live_imgsz = min(opts.det_imgsz, 256)
+        jpeg_q = 76
         det_model = MODELS.yolo_fast if MODELS.has_yolo_fast else MODELS.yolo
+        interleave_stride = 3
     elif opts.quality_mode == 'balanced':
         proxy_sz = 192
-        live_imgsz = min(opts.det_imgsz, 384)
-        jpeg_q = 85
+        live_imgsz = min(opts.det_imgsz, 320)
+        jpeg_q = 82
         det_model = MODELS.yolo
+        interleave_stride = 2
     else:  # 'quality'
         proxy_sz = 256
         live_imgsz = opts.det_imgsz
-        jpeg_q = 90
+        jpeg_q = 88
         det_model = MODELS.yolo
+        interleave_stride = 2
 
-    enhanced_list = enhance_frame_batch(
-        MODELS.enhancer, MODELS.device, [frame_rgb],
-        size=proxy_sz, adaptive=opts.adaptive
-    )
-    enh_rgb = enhanced_list[0]
-    enh_lum = float(enh_rgb[::16, ::16].mean() / 255.0)
+    # If adaptive and frame is already well-lit (indoor room or daylight >= 0.38),
+    # bypass neural DCE-Net completely to save ~40ms CPU time and preserve natural raw feed.
+    if opts.adaptive and orig_lum >= 0.38:
+        enh_rgb = frame_rgb.copy()
+        enh_lum = orig_lum
+    else:
+        enhanced_list = enhance_frame_batch(
+            MODELS.enhancer, MODELS.device, [frame_rgb],
+            size=proxy_sz, adaptive=opts.adaptive
+        )
+        enh_rgb = enhanced_list[0]
+        enh_lum = float(enh_rgb[::16, ::16].mean() / 255.0)
 
     dets = []
     counts = {}
@@ -445,13 +454,20 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
 
     if opts.enable_detect and MODELS.has_yolo:
         LIVE_DET_CACHE['frame_idx'] += 1
-        run_heavy = (not opts.interleaved) or (LIVE_DET_CACHE['frame_idx'] % 2 == 1)
+        run_heavy = (not opts.interleaved) or (LIVE_DET_CACHE['frame_idx'] % interleave_stride == 1)
         eff_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
 
         if run_heavy or not LIVE_DET_CACHE['last_dets']:
             enh_rgb, dets, counts, high_risk = detect_and_draw(
                 det_model, enh_rgb, conf=eff_conf, imgsz=live_imgsz
             )
+            # In live webcam view, the person sitting at the camera is the operator, not a collision hazard
+            for d in dets:
+                if d.get('name') == 'Person' and d.get('risk') == 'HIGH':
+                    d['risk'] = 'SAFE'
+                    d['label'] = 'Person · SAFE'
+            high_risk = any(d.get('risk') == 'HIGH' for d in dets)
+
             LIVE_DET_CACHE['last_dets'] = dets
             LIVE_DET_CACHE['last_counts'] = counts
             LIVE_DET_CACHE['last_high_risk'] = high_risk

@@ -40,7 +40,7 @@ def load_enhancer(weights_path, device='cuda'):
     return model, device
 
 
-def scene_blend_weight(luminance, dark_thresh=0.35, bright_thresh=0.55):
+def scene_blend_weight(luminance, dark_thresh=0.26, bright_thresh=0.38):
     """
     Blend factor between original and enhanced frame based on
     scene brightness (0..1 average luminance):
@@ -170,12 +170,26 @@ def enhance_image(model, device, image_path,
 
 @torch.no_grad()
 def enhance_frame_batch(model, device, frames_rgb,
-                        size=256, adaptive=True):
+                        size=256, adaptive=True,
+                        dark_thresh=0.26, bright_thresh=0.38):
     """
     Enhance a batch of full-resolution video frames.
     Input : list of (H,W,3) uint8 RGB arrays, all the same size
     Output: list of (H,W,3) uint8 RGB arrays at the same resolution
     """
+    if not frames_rgb:
+        return []
+
+    # Fast daylight / well-lit bypass: if scene is already well lit, avoid redundant
+    # neural network computation and preserve natural camera contrast without noise/bleaching.
+    if adaptive:
+        lums = [float(f[::16, ::16].mean() / 255.0) for f in frames_rgb]
+        weights = [scene_blend_weight(l, dark_thresh=dark_thresh, bright_thresh=bright_thresh) for l in lums]
+        if max(weights) < 0.02:
+            return [f.copy() for f in frames_rgb]
+    else:
+        weights = [1.0] * len(frames_rgb)
+
     arr_full = np.stack(frames_rgb).astype(np.float32) / 255.0
     t_full   = torch.from_numpy(arr_full).permute(
         0, 3, 1, 2).to(device)
@@ -183,19 +197,22 @@ def enhance_frame_batch(model, device, frames_rgb,
     enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
 
     if adaptive:
-        # Fast strided subsample for luminance estimate
-        lum    = t_full[:, :, ::16, ::16].mean(dim=[1, 2, 3])
-        alphas = torch.tensor(
-            [scene_blend_weight(float(l)) for l in lum],
-            device=device).view(-1, 1, 1, 1)
+        alphas = torch.tensor(weights, device=device, dtype=torch.float32).view(-1, 1, 1, 1)
         enh_full = t_full * (1 - alphas) + enh_full * alphas
 
     out = (enh_full.permute(0, 2, 3, 1).cpu().numpy()
            * 255).clip(0, 255).astype(np.uint8)
 
     from src.detection import sharpen_frame
-    return [sharpen_frame(correct_color_cast(frame), amount=0.25) for frame in out]
-
+    res = []
+    for frame, w in zip(out, weights):
+        if w < 0.05:
+            res.append(frame)
+        else:
+            cc = correct_color_cast(frame, strength=0.6 * w)
+            sh = sharpen_frame(cc, amount=0.25 * w)
+            res.append(sh)
+    return res
 
 def transcode_for_browser(path, crf=23, preset='veryfast', timeout=300):
     """

@@ -63,6 +63,7 @@ export default function LivePage() {
   const animFrameRef = useRef<number | null>(null);
   const latestDetsRef = useRef<any[]>([]);
   const fpsHistoryRef = useRef<number[]>([]);
+  const latestBrightnessRef = useRef<number | null>(null);
 
   useEffect(() => {
     streamEngineRef.current = streamEngine;
@@ -195,9 +196,21 @@ export default function LivePage() {
       }
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.filter = optsRef.current.adaptive
-          ? 'contrast(125%) brightness(145%) saturate(115%)'
-          : 'contrast(115%) brightness(130%)';
+        const b = latestBrightnessRef.current;
+        if (optsRef.current.adaptive) {
+          if (b !== null && b >= 0.36) {
+            // Already well-lit room or daylight: display natural raw camera video without artificial bleaching
+            ctx.filter = 'none';
+          } else {
+            // Dark scene: scale brightness and contrast boost proportionally to how dark it is
+            const darkRatio = b !== null ? Math.min(1.0, Math.max(0.0, (0.36 - b) / 0.26)) : 0.6;
+            const bPct = Math.round(100 + darkRatio * 35);
+            const cPct = Math.round(100 + darkRatio * 15);
+            ctx.filter = `brightness(${bPct}%) contrast(${cPct}%)`;
+          }
+        } else {
+          ctx.filter = 'contrast(115%) brightness(130%)';
+        }
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.filter = 'none';
 
@@ -207,12 +220,13 @@ export default function LivePage() {
             if (!d.box) return;
             const [x1, y1, x2, y2] = d.box;
             const isHigh = d.risk === 'HIGH';
-            ctx.strokeStyle = isHigh ? '#ff3b30' : '#00f0ff';
-            ctx.lineWidth = 3;
+            const isSafe = d.risk === 'SAFE' || d.risk === 'LOW';
+            ctx.strokeStyle = isHigh ? '#ff3b30' : isSafe ? '#00e676' : '#00f0ff';
+            ctx.lineWidth = 2.5;
             ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
 
-            ctx.fillStyle = isHigh ? 'rgba(255, 59, 48, 0.9)' : 'rgba(0, 240, 255, 0.9)';
-            const label = `${d.name} ${(d.conf * 100).toFixed(0)}%`;
+            ctx.fillStyle = isHigh ? 'rgba(255, 59, 48, 0.9)' : isSafe ? 'rgba(0, 230, 118, 0.9)' : 'rgba(0, 240, 255, 0.9)';
+            const label = `${d.name} ${(d.conf * 100).toFixed(0)}% · ${d.risk || 'SAFE'}`;
             ctx.font = 'bold 12px sans-serif';
             const textW = ctx.measureText(label).width;
             ctx.fillRect(x1, Math.max(y1 - 18, 0), textW + 6, 16);
@@ -282,6 +296,7 @@ export default function LivePage() {
         if (!streamingRef.current) break;
 
         latestDetsRef.current = r.detections || [];
+        latestBrightnessRef.current = r.brightness;
         setLiveResult(r);
         setFrameCount((n) => n + 1);
 
