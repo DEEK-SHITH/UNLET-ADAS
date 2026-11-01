@@ -81,11 +81,24 @@ def _draw_header_badge(img, text, origin, bg_color, text_color, dot_color=None):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.44, text_color, 1, cv2.LINE_AA)
 
 
-def _compose_comparison_frame(orig_bgr, enh_bgr):
+def _compose_comparison_frame(orig_bgr, enh_bgr, target_w=None, target_h=None):
     """Creates a high-resolution side-by-side comparison frame with status badges."""
     h, w = orig_bgr.shape[:2]
     if enh_bgr.shape[:2] != (h, w):
         enh_bgr = cv2.resize(enh_bgr, (w, h))
+
+    if target_w is not None and target_h is not None:
+        half_w = target_w // 2
+        orig_part = cv2.resize(orig_bgr, (half_w, target_h), interpolation=cv2.INTER_AREA)
+        enh_part = cv2.resize(enh_bgr, (target_w - half_w, target_h), interpolation=cv2.INTER_AREA)
+        comp = np.hstack([orig_part, enh_part])
+        cv2.line(comp, (half_w, 0), (half_w, target_h), (50, 50, 50), 2)
+        _draw_header_badge(comp, 'ORIGINAL INPUT', (14, 26),
+                           (25, 25, 25), (220, 220, 220), dot_color=(0, 0, 220))
+        _draw_header_badge(comp, 'UNLET-ADAS ENHANCED', (half_w + 14, 26),
+                           (20, 32, 24), (100, 255, 180), dot_color=(0, 220, 100))
+        return comp
+
     comp = np.hstack([orig_bgr, enh_bgr])
     _draw_header_badge(comp, 'ORIGINAL INPUT', (18, 28),
                        (25, 25, 25), (220, 220, 220), dot_color=(0, 0, 220))
@@ -552,30 +565,44 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     # Determine processing speed vs quality trade-offs based on preset
     qp = getattr(opts, 'quality_preset', 'high')
     if qp == 'turbo':
-        crf = 20
-        proxy_sz = 160
-        eff_imgsz = min(opts.det_imgsz, 480)
+        crf = 18          # Visually lossless H.264 matching native uploaded video quality
+        preset = 'ultrafast'
+        proxy_sz = 128    # Ultra-fast Zero-DCE proxy estimation
+        eff_imgsz = 384   # High accuracy, low CPU latency
         eff_fast_mode = True
-        det_stride = 3
+        det_stride = 4    # Run detection every 4th frame, redraw cached boxes on intermediate
+        batch_size = 8    # Vectorized PyTorch batching
+        interp_mode = 'nearest'
+        fast_color = True
     elif qp == 'ultra':
-        crf = 17
+        crf = 16
+        preset = 'veryfast'
         proxy_sz = 256
         eff_imgsz = opts.det_imgsz
         eff_fast_mode = False
         det_stride = 1
-    else:  # 'high' (default)
+        batch_size = 4
+        interp_mode = 'bilinear'
+        fast_color = False
+    else:  # 'high' / 'balanced'
         crf = 18
-        proxy_sz = 256
-        eff_imgsz = opts.det_imgsz
+        preset = 'ultrafast'
+        proxy_sz = 192
+        eff_imgsz = min(opts.det_imgsz, 512)
         eff_fast_mode = opts.fast_mode
-        det_stride = 2 if eff_fast_mode else 1
+        det_stride = 3 if eff_fast_mode else 1
+        batch_size = 6
+        interp_mode = 'bilinear'
+        fast_color = True
+
+    active_yolo = MODELS.yolo_fast if (qp == 'turbo' and MODELS.has_yolo_fast) else MODELS.yolo
 
     out_path = os.path.join(output_dir, f'{job_id}_enhanced.mp4')
     comp_path = os.path.join(output_dir, f'{job_id}_comparison.mp4')
 
-    # Dual single-pass FFmpeg writers
-    writer = DirectFFmpegVideoWriter(out_path, W, H, fps, crf=crf, preset='veryfast')
-    writer_comp = DirectFFmpegVideoWriter(comp_path, W * 2, H, fps, crf=crf, preset='veryfast')
+    # Dual single-pass FFmpeg writers (both standard W x H resolution)
+    writer = DirectFFmpegVideoWriter(out_path, W, H, fps, crf=crf, preset=preset)
+    writer_comp = DirectFFmpegVideoWriter(comp_path, W, H, fps, crf=crf, preset=preset)
 
     has_depth = ensure_depth_model() if opts.use_depth_risk else False
     lane_tracker = LaneTracker() if opts.enable_lanes else None
@@ -585,6 +612,7 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     last_pot_boxes = []
     last_sign_boxes = []
     last_depth_map = None
+    last_lane_lines = None
     seen_track_ids_by_class: dict[str, set[int]] = {}
     peak_untracked_by_class: dict[str, int] = {}
     proc_idx = 0
@@ -617,7 +645,8 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
             with torch.inference_mode():
                 enhanced_batch = enhance_frame_batch(
                     MODELS.enhancer, MODELS.device, fb_rgb,
-                    size=proxy_sz, adaptive=opts.adaptive)
+                    size=proxy_sz, adaptive=opts.adaptive,
+                    interp_mode=interp_mode, fast_color=fast_color)
 
             for orig_bgr, enh_rgb in zip(fb_bgr, enhanced_batch):
                 if job.cancel_requested:
@@ -629,10 +658,14 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                 frame_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
 
                 if opts.enable_lanes:
-                    left, right = detect_lanes(
-                        enh_rgb,
-                        roi_bottom=lane_roi_bottom if lane_roi_bottom is not None else 1.0,
-                        tracker=lane_tracker)
+                    if (proc_idx % (det_stride if eff_fast_mode else 1) == 0) or last_lane_lines is None:
+                        left, right = detect_lanes(
+                            enh_rgb,
+                            roi_bottom=lane_roi_bottom if lane_roi_bottom is not None else 1.0,
+                            tracker=lane_tracker)
+                        last_lane_lines = (left, right)
+                    else:
+                        left, right = last_lane_lines
                     if left is not None or right is not None:
                         enh_rgb = draw_lanes(enh_rgb, left, right)
 
@@ -683,12 +716,12 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                         try:
                             (enh_rgb, frame_counts, _frame_ids,
                              frame_risk, last_det_list) = track_and_draw(
-                                MODELS.yolo, enh_rgb, conf=frame_conf,
+                                active_yolo, enh_rgb, conf=frame_conf,
                                 imgsz=eff_imgsz, depth_map=depth_map)
                         except Exception:
                             (enh_rgb, last_det_list, frame_counts,
                              frame_risk) = detect_and_draw(
-                                MODELS.yolo, enh_rgb, conf=frame_conf,
+                                active_yolo, enh_rgb, conf=frame_conf,
                                 imgsz=eff_imgsz, depth_map=depth_map)
 
                         job.high_risk = job.high_risk or frame_risk
@@ -714,7 +747,7 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                 proc_idx += 1
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 writer.write(enh_bgr)
-                comp_frame = _compose_comparison_frame(orig_bgr, enh_bgr)
+                comp_frame = _compose_comparison_frame(orig_bgr, enh_bgr, target_w=W, target_h=H)
                 writer_comp.write(comp_frame)
 
             job.frames_done = count

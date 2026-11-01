@@ -6,7 +6,6 @@ import DropZone from '@/components/DropZone';
 import Toggle from '@/components/Toggle';
 import SliderField from '@/components/SliderField';
 import PageTransition from '@/components/PageTransition';
-import AccuracyBadgeCard from '@/components/AccuracyBadgeCard';
 import {
   AppConfig,
   JobStatus,
@@ -28,7 +27,7 @@ const DEFAULT_OPTS: VideoOptions = {
   enable_lanes: false,
   use_depth_risk: false,
   fast_mode: true,
-  quality_preset: 'high',
+  quality_preset: 'turbo',
 };
 
 export default function VideoPage() {
@@ -412,10 +411,6 @@ export default function VideoPage() {
               </motion.div>
             )}
           </AnimatePresence>
-
-          <div className="mt-6">
-            <AccuracyBadgeCard defaultOpen={true} />
-          </div>
         </motion.section>
       </div>
     </PageTransition>

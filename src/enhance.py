@@ -166,7 +166,8 @@ def enhance_image(model, device, image_path,
 @torch.no_grad()
 def enhance_frame_batch(model, device, frames_rgb,
                         size=256, adaptive=True,
-                        dark_thresh=0.26, bright_thresh=0.38):
+                        dark_thresh=0.26, bright_thresh=0.38,
+                        interp_mode='bilinear', fast_color=False):
     """
     Enhance a batch of full-resolution video frames.
     Input : list of (H,W,3) uint8 RGB arrays, all the same size
@@ -189,7 +190,7 @@ def enhance_frame_batch(model, device, frames_rgb,
     t_full   = torch.from_numpy(arr_full).permute(
         0, 3, 1, 2).to(device)
 
-    enh_full, _ = model.enhance_full_res(t_full, proxy_size=size)
+    enh_full, _ = model.enhance_full_res(t_full, proxy_size=size, interp_mode=interp_mode)
 
     if adaptive:
         alphas = torch.tensor(weights, device=device, dtype=torch.float32).view(-1, 1, 1, 1)
@@ -200,12 +201,37 @@ def enhance_frame_batch(model, device, frames_rgb,
 
     from src.detection import sharpen_frame
     res = []
+    lut_r, lut_b = None, None
+    if fast_color and len(out) > 0 and max(weights) >= 0.05:
+        # Fast color correction via single-pass RGB LUT estimated from 64x64 proxy
+        small = cv2.resize(out[0], (64, 64), interpolation=cv2.INTER_NEAREST)
+        lab_s = cv2.cvtColor(small, cv2.COLOR_RGB2LAB)
+        L_flat = lab_s[:, :, 0].ravel()
+        k = int(0.60 * len(L_flat))
+        thresh = np.partition(L_flat, k)[k]
+        mask = lab_s[:, :, 0] >= thresh
+        if mask.sum() >= 20:
+            a_dev = float(lab_s[:, :, 1][mask].mean()) - 128.0
+            b_dev = float(lab_s[:, :, 2][mask].mean()) - 128.0
+            if abs(a_dev) > 2.0 or abs(b_dev) > 2.0:
+                scale_r = float(np.clip(1.0 - a_dev * 0.0035, 0.85, 1.15))
+                scale_b = float(np.clip(1.0 - b_dev * 0.0035, 0.85, 1.15))
+                idx = np.arange(256, dtype=np.float32)
+                lut_r = np.clip(idx * scale_r, 0, 255).astype(np.uint8)
+                lut_b = np.clip(idx * scale_b, 0, 255).astype(np.uint8)
+
     for frame, w in zip(out, weights):
         if w < 0.05:
             res.append(frame)
         else:
-            cc = correct_color_cast(frame, strength=0.6 * w)
-            sh = sharpen_frame(cc, amount=0.25 * w)
+            if fast_color:
+                if lut_r is not None and lut_b is not None:
+                    frame[:, :, 0] = cv2.LUT(frame[:, :, 0], lut_r)
+                    frame[:, :, 2] = cv2.LUT(frame[:, :, 2], lut_b)
+                cc = frame
+            else:
+                cc = correct_color_cast(frame, strength=0.6 * w)
+            sh = sharpen_frame(cc, amount=0.20 * w)
             res.append(sh)
     return res
 

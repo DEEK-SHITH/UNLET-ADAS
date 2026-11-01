@@ -78,7 +78,8 @@ def _apply_curves_fast(x: torch.Tensor, curves: torch.Tensor, num_iters: int) ->
 
 
 def _apply_proxy_curves_fast(
-    x_full: torch.Tensor, curves_proxy: torch.Tensor, num_iters: int
+    x_full: torch.Tensor, curves_proxy: torch.Tensor, num_iters: int,
+    interp_mode: str = 'bilinear'
 ) -> torch.Tensor:
     enhanced = x_full
     target_size = x_full.shape[2:]
@@ -89,7 +90,10 @@ def _apply_proxy_curves_fast(
     if same_size:
         A_all = curves_proxy
     else:
-        A_all = F.interpolate(
+        if interp_mode == 'nearest':
+            A_all = F.interpolate(curves_proxy, size=target_size, mode='nearest')
+        else:
+            A_all = F.interpolate(
             curves_proxy, size=target_size, mode='bilinear', align_corners=False
         )
     for i in range(num_iters):
@@ -165,7 +169,7 @@ class ZeroDCECBAM(nn.Module):
         return enhanced, curves
 
     @torch.no_grad()
-    def enhance_full_res(self, x_full, proxy_size=256):
+    def enhance_full_res(self, x_full, proxy_size=256, interp_mode='bilinear'):
         """
         Estimate curves on a small downsized proxy (cheap, robust to
         any input size) then apply them directly to the full-resolution
@@ -186,7 +190,7 @@ class ZeroDCECBAM(nn.Module):
                 x_full, size=(proxy_size, proxy_size),
                 mode='bilinear', align_corners=False)
         curves = self.estimate_curves(proxy)
-        enhanced = _apply_proxy_curves_fast(x_full, curves, self.num_iters)
+        enhanced = _apply_proxy_curves_fast(x_full, curves, self.num_iters, interp_mode=interp_mode)
         return enhanced, curves
 
 
