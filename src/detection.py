@@ -103,7 +103,7 @@ def _plausible_traffic_light_shape(x1, y1, x2, y2):
     w, h = x2 - x1, y2 - y1
     if h <= 0:
         return False
-    return (w / h) <= 0.85
+    return (w / h) <= 0.75
 
 
 def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h):
@@ -129,50 +129,107 @@ def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h):
 
 def _merge_overlapping_traffic_lights(det_list):
     """
-    Merges duplicate or fragmented traffic light bounding boxes (e.g. top red/yellow
-    signal and bottom green arrows detected as separate overlapping boxes on the
-    same fixture) into a single cohesive bounding box with maximum confidence.
+    Merges duplicate or multi-aspect traffic light bounding boxes (such as top
+    red/yellow signal heads and bottom green directional arrows detected as separate
+    overlapping or contiguous boxes on the same fixture) into a single cohesive
+    bounding box with the maximum confidence of the fixture.
     """
     tl_items = [d for d in det_list if d['name'] == 'Traffic Light']
-    if len(tl_items) <= 1:
+    if not tl_items:
         return det_list
 
     non_tl = [d for d in det_list if d['name'] != 'Traffic Light']
+    confirmed_tls = [d for d in tl_items if d.get('confirmed', True)]
+    aux_tls = [d for d in tl_items if not d.get('confirmed', True)]
+
+    # If no confirmed traffic light passes the threshold, drop auxiliary candidates
+    if not confirmed_tls:
+        return non_tl
+
     merged_tl = []
-    used = set()
+    for i, c_tl in enumerate(confirmed_tls):
+        x1, y1, x2, y2 = c_tl['box']
+        conf = c_tl['conf']
+        track_id = c_tl.get('track_id')
 
-    for i, d1 in enumerate(tl_items):
-        if i in used:
-            continue
-        x1, y1, x2, y2 = d1['box']
-        conf = d1['conf']
-        track_id = d1.get('track_id')
-
-        for j, d2 in enumerate(tl_items):
-            if j <= i or j in used:
+        # 1. Merge with any other confirmed traffic lights on the same pole
+        for j, o_tl in enumerate(confirmed_tls):
+            if j <= i:
                 continue
-            ox1, oy1, ox2, oy2 = d2['box']
-            # If horizontally aligned (same pole/housing) and vertically overlapping or adjacent
-            if abs(x1 - ox1) < 25 and abs(x2 - ox2) < 25:
+            ox1, oy1, ox2, oy2 = o_tl['box']
+            cx, ocx = (x1 + x2) / 2, (ox1 + ox2) / 2
+            bw, obw = x2 - x1, ox2 - ox1
+            bh, obh = y2 - y1, oy2 - oy1
+            h_overlap = min(x2, ox2) - max(x1, ox1)
+            v_gap = max(0, max(y1, oy1) - min(y2, oy2))
+            if (h_overlap > 0.20 * min(bw, obw) or abs(cx - ocx) < 0.60 * max(bw, obw)) and v_gap < 0.50 * max(bh, obh):
                 x1 = min(x1, ox1)
                 y1 = min(y1, oy1)
                 x2 = max(x2, ox2)
                 y2 = max(y2, oy2)
-                conf = max(conf, d2['conf'])
+                conf = max(conf, o_tl['conf'])
                 if track_id is None:
-                    track_id = d2.get('track_id')
-                used.add(j)
-        used.add(i)
+                    track_id = o_tl.get('track_id')
 
-        merged_item = dict(d1)
+        # 2. Merge with any auxiliary candidates (e.g. green arrows or full fixture sub-detections)
+        for k, a_tl in enumerate(aux_tls):
+            ax1, ay1, ax2, ay2 = a_tl['box']
+            cx, acx = (x1 + x2) / 2, (ax1 + ax2) / 2
+            bw, abw = x2 - x1, ax2 - ax1
+            bh, abh = y2 - y1, ay2 - ay1
+            h_overlap = min(x2, ax2) - max(x1, ax1)
+            v_gap = max(0, max(y1, ay1) - min(y2, ay2))
+            if (h_overlap > 0.20 * min(bw, abw) or abs(cx - acx) < 0.65 * max(bw, abw)) and v_gap < 0.60 * max(bh, abh):
+                x1 = min(x1, ax1)
+                y1 = min(y1, ay1)
+                x2 = max(x2, ax2)
+                y2 = max(y2, ay2)
+                conf = max(conf, a_tl['conf'])
+                if track_id is None:
+                    track_id = a_tl.get('track_id')
+
+        merged_item = dict(c_tl)
         merged_item['box'] = [x1, y1, x2, y2]
         merged_item['conf'] = conf
         if track_id is not None:
             merged_item['track_id'] = track_id
         merged_tl.append(merged_item)
 
-    return non_tl + merged_tl
+    # De-duplicate any confirmed merged items that now encompass each other
+    final_tl = []
+    used_tl = set()
+    for i, m1 in enumerate(merged_tl):
+        if i in used_tl:
+            continue
+        bx1, by1, bx2, by2 = m1['box']
+        m_conf = m1['conf']
+        m_tid = m1.get('track_id')
+        for j in range(i + 1, len(merged_tl)):
+            if j in used_tl:
+                continue
+            m2 = merged_tl[j]
+            obx1, oby1, obx2, oby2 = m2['box']
+            inter = max(0, min(bx2, obx2) - max(bx1, obx1)) * max(0, min(by2, oby2) - max(by1, oby1))
+            a1 = (bx2 - bx1) * (by2 - by1)
+            a2 = (obx2 - obx1) * (oby2 - oby1)
+            if inter > 0.35 * min(a1, a2):
+                bx1 = min(bx1, obx1)
+                by1 = min(by1, oby1)
+                bx2 = max(bx2, obx2)
+                by2 = max(by2, oby2)
+                m_conf = max(m_conf, m2['conf'])
+                if m_tid is None:
+                    m_tid = m2.get('track_id')
+                used_tl.add(j)
+        used_tl.add(i)
+        f_item = dict(m1)
+        f_item['box'] = [bx1, by1, bx2, by2]
+        f_item['conf'] = m_conf
+        if m_tid is not None:
+            f_item['track_id'] = m_tid
+        final_tl.append(f_item)
 
+    return non_tl + final_tl
 
 def _filter_duplicate_vehicle_boxes(det_list):
     """
@@ -253,7 +310,8 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
     if class_map is None:
         class_map = ADAS_CLASSES
     h, w = image_np.shape[:2]
-    results = yolo(image_np, conf=conf, imgsz=imgsz, verbose=False)[0]
+    scan_conf = min(conf, 0.12)
+    results = yolo(image_np, conf=scan_conf, imgsz=imgsz, verbose=False)[0]
 
     raw_candidates = []
     for box in results.boxes:
@@ -264,15 +322,25 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-        if name == 'Traffic Light' and not _plausible_traffic_light_shape(x1, y1, x2, y2):
-            continue
-
-        name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
-        raw_candidates.append({
-            'name': name,
-            'conf': round(conf_s, 3),
-            'box': [x1, y1, x2, y2],
-        })
+        if name == 'Traffic Light':
+            if not _plausible_traffic_light_shape(x1, y1, x2, y2):
+                continue
+            raw_candidates.append({
+                'name': name,
+                'conf': round(conf_s, 3),
+                'box': [x1, y1, x2, y2],
+                'confirmed': conf_s >= conf,
+            })
+        else:
+            if conf_s < conf:
+                continue
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
+            raw_candidates.append({
+                'name': name,
+                'conf': round(conf_s, 3),
+                'box': [x1, y1, x2, y2],
+                'confirmed': True,
+            })
 
     # Coherence filters: merge fragmented traffic lights and remove overlapping duplicate boxes
     filtered_dets = _merge_overlapping_traffic_lights(raw_candidates)
@@ -317,8 +385,9 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
     if class_map is None:
         class_map = ADAS_CLASSES
     h, w = image_np.shape[:2]
+    scan_conf = min(conf, 0.12)
     results = yolo.track(
-        image_np, conf=conf, imgsz=imgsz, persist=True,
+        image_np, conf=scan_conf, imgsz=imgsz, persist=True,
         tracker='bytetrack.yaml', verbose=False)[0]
 
     raw_candidates = []
@@ -331,17 +400,29 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         conf_s = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-        if name == 'Traffic Light' and not _plausible_traffic_light_shape(x1, y1, x2, y2):
-            continue
-
-        name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
-        track_id = int(ids[i]) if ids is not None else None
-        raw_candidates.append({
-            'name': name,
-            'conf': round(conf_s, 3),
-            'box': [x1, y1, x2, y2],
-            'track_id': track_id,
-        })
+        if name == 'Traffic Light':
+            if not _plausible_traffic_light_shape(x1, y1, x2, y2):
+                continue
+            track_id = int(ids[i]) if ids is not None else None
+            raw_candidates.append({
+                'name': name,
+                'conf': round(conf_s, 3),
+                'box': [x1, y1, x2, y2],
+                'track_id': track_id,
+                'confirmed': conf_s >= conf,
+            })
+        else:
+            if conf_s < conf:
+                continue
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h)
+            track_id = int(ids[i]) if ids is not None else None
+            raw_candidates.append({
+                'name': name,
+                'conf': round(conf_s, 3),
+                'box': [x1, y1, x2, y2],
+                'track_id': track_id,
+                'confirmed': True,
+            })
 
     filtered_dets = _merge_overlapping_traffic_lights(raw_candidates)
     filtered_dets = _filter_duplicate_vehicle_boxes(filtered_dets)
