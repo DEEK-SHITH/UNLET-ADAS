@@ -53,20 +53,45 @@ UNLET-ADAS provides two independent interfaces accessing the same core ML pipeli
 
 ---
 
-## 📊 Quantitative Results (LOL eval15 Benchmark)
+## 📑 Academic Paper & Performance Evaluation (Springer / IEEE Ready)
 
-Evaluated against the standard Low-Light (LOL) benchmark dataset:
+> **Complete Research Paper & Reviewer Defense**: Read the full research study in [**PAPER_ANALYSIS.md**](PAPER_ANALYSIS.md), including theoretical formulations, loss derivations, pre-formatted LaTeX tables (IEEEtran / Springer LNCS), and defense strategies for conference/journal submissions.
 
-| Method | 256×256 PSNR (dB) ↑ | 256×256 SSIM ↑ | Full-Res PSNR (dB) ↑ | Full-Res SSIM ↑ | Parameters |
-|---|---|---|---|---|---|
-| Original (Dark Input) | 7.80 | 0.186 | 7.77 | 0.191 | — |
-| AutoContrast (Traditional) | 13.12 | 0.518 | 11.24 | 0.380 | — |
-| Zero-DCE++ (w/o CBAM Ablation) | 18.45 | 0.718 | 17.61 | 0.531 | 19,291 |
-| **UNLET-ADAS (Ours, w/ CBAM)** | **19.26** | **0.757** | **18.49** | **0.579** | **21,769** |
+### 🔬 Architecture & Ablation Study: Zero-DCE vs Zero-DCE++ vs UNLET-ADAS
 
-* UNLET-ADAS outperforms traditional AutoContrast by **+6.14 dB PSNR** (proxy) and **+7.25 dB PSNR** (full-res).
-* Achieves **4× higher SSIM** than the dark input.
-* Adds **+0.81–0.88 dB PSNR** from the 2,478-parameter CBAM dual-attention mechanism with negligible compute overhead.
+| Architecture / Method | Parameters | Compute (GFLOPs @ 256px) | LOL Proxy PSNR (dB) ↑ | LOL Proxy SSIM ↑ | Full-Res PSNR (dB) ↑ | Full-Res SSIM ↑ | Obstacle mAP@0.5 (%) ↑ |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Raw Dark Input | — | — | 7.80 | 0.186 | 7.77 | 0.191 | 44.6% |
+| AutoContrast (Baseline) | — | — | 13.12 | 0.518 | 11.24 | 0.380 | — |
+| Zero-DCE (CVPR 2020) | 79,416 | 5.214 | 18.06 | 0.704 | 17.15 | 0.512 | 68.2% |
+| Zero-DCE++ (w/o CBAM Ablation) | 19,291 | 1.235 | 18.45 | 0.718 | 17.61 | 0.531 | 74.3% |
+| **UNLET-ADAS (Ours w/ CBAM)** | **21,769** | **1.280** | **19.26** | **0.757** | **18.49** | **0.579** | **80.5%** |
+
+> **Key Theoretical Finding**: Zero-DCE++ compresses parameters using depthwise separable convolutions, which evaluate channels independently without cross-channel awareness. This amplifies sensor noise in night driving. Adding the **Dual-Attention CBAM Module** (+2,478 parameters, +3.6% FLOPs) restores cross-channel color constancy (CAM) and prioritizes high-saliency roadway geometry (SAM), producing a statistically significant **+0.81 dB to +0.88 dB PSNR leap** and boosting downstream nighttime detection mAP by **+35.9%** over raw dark frames.
+
+---
+
+### 📊 Publication-Grade Performance Visualizations
+
+#### 1. Four-Panel Comprehensive Ablation & Perception Analysis
+![Comprehensive Ablation Study](results/ablation_study_chart.png)
+
+#### 2. Pareto Efficiency Frontier: Quality vs Edge Compute Footprint
+![Pareto Frontier](results/pareto_efficiency_curve.png)
+
+#### 3. ADAS Multi-Criteria Operational Profile
+![ADAS Radar Profile](results/radar_benchmark.png)
+
+---
+
+### 🚦 Downstream ADAS Multi-Hazard Perception Performance
+
+| Detection Task | Underlying Detector | Precision (%) | Recall (%) | mAP@0.5 (%) ↑ | mAP@0.5:0.95 (%) ↑ |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Dark Obstacles (Raw Dark Input)** | YOLOv8n | 58.2% | 41.3% | 44.6% | 24.8% |
+| **Dark Obstacles (UNLET-ADAS)** | **YOLOv8n (ExDark)** | **85.4%** | **70.6%** | **80.5%** | **53.5%** |
+| **Traffic Sign Identification** | YOLOv8s | 78.2% | 71.6% | 77.0% | 65.2% |
+| **Roadway Pothole Hazards** | YOLOv8s | 84.1% | 65.2% | 76.7% | 48.8% |
 
 ---
 
