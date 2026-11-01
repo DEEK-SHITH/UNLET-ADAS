@@ -84,39 +84,34 @@ def scene_aware_conf(base_conf, luminance, dark_thresh=0.35,
 
 def correct_color_cast(frame_uint8, strength=0.6, lum_pctl=60, max_shift=18):
     """
-    Mild white-balance correction in LAB space, using only the
+    Ultra-fast white-balance correction in LAB space, using only the
     brightest ~40% of pixels to estimate the tint.
 
-    Plain whole-image gray-world fails on night frames: the huge
-    near-black background (sky, unlit distance) dominates the color
-    statistics, so the correction computed from it gets applied to
-    the bright, informative road surface too — overshooting into a
-    new (often blue/purple) cast instead of removing the original
-    one. Estimating the tint from just the well-lit pixels, shifting
-    only LAB's a/b (color) channels partially back toward neutral
-    (L, i.e. brightness, is left untouched), and capping the shift
-    keeps this a gentle tint fix rather than a full renormalization.
-
-    For high-resolution frames, tint statistics are estimated on a 4x4
-    strided subsample and applied via a 256-entry uint8 LUT (cv2.LUT),
-    avoiding full-frame float32 allocations and cutting CPU latency ~10x.
+    Estimates chromaticity bias from a downsampled proxy (64x64) using fast
+    partitioning, avoiding full-resolution floating point percentile sorts.
+    If the detected tint bias is negligible (|shift| < 1.0), returns the original
+    frame directly with zero computational overhead.
     """
-    lab = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2LAB)
-    h, w = lab.shape[:2]
-    sample = lab[::4, ::4] if (h * w >= 16384) else lab
-    L_s = sample[:, :, 0]
-    A_s = sample[:, :, 1]
-    B_s = sample[:, :, 2]
+    # Rapid chromaticity estimation on 64x64 thumbnail
+    small = cv2.resize(frame_uint8, (64, 64), interpolation=cv2.INTER_NEAREST)
+    lab_s = cv2.cvtColor(small, cv2.COLOR_RGB2LAB)
+    L_flat = lab_s[:, :, 0].ravel()
+    k = int((lum_pctl / 100.0) * len(L_flat))
+    thresh = np.partition(L_flat, k)[k]
+    mask = lab_s[:, :, 0] >= thresh
+    if mask.sum() < 20:
+        mask = np.ones((64, 64), dtype=bool)
 
-    mask = L_s >= np.percentile(L_s, lum_pctl)
-    if mask.sum() < 50:
-        mask = np.ones_like(L_s, dtype=bool)
-
-    a_dev = float(A_s[mask].mean()) - 128.0
-    b_dev = float(B_s[mask].mean()) - 128.0
+    a_dev = float(lab_s[:, :, 1][mask].mean()) - 128.0
+    b_dev = float(lab_s[:, :, 2][mask].mean()) - 128.0
     a_shift = float(np.clip(-a_dev * strength, -max_shift, max_shift))
     b_shift = float(np.clip(-b_dev * strength, -max_shift, max_shift))
 
+    # If color shift is negligible, avoid full-resolution conversions
+    if abs(a_shift) < 1.0 and abs(b_shift) < 1.0:
+        return frame_uint8
+
+    lab = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2LAB)
     idx = np.arange(256, dtype=np.float32)
     lut_a = np.clip(idx + a_shift, 0, 255).astype(np.uint8)
     lut_b = np.clip(idx + b_shift, 0, 255).astype(np.uint8)

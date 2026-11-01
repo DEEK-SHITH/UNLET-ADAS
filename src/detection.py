@@ -106,16 +106,42 @@ def _plausible_traffic_light_shape(x1, y1, x2, y2):
     return (w / h) <= 0.75
 
 
-def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0):
+def _is_rear_cargo_truck(patch):
     """
-    Resolves false 'Bus' or 'Truck' classifications on cropped passenger cars in front
-    of the ego vehicle. When a car's rear, roofline, or hood is immediately adjacent to the ego
-    hood and physically truncated at the very bottom edge of a dashcam frame (y2 >= 88% frame_h),
-    its extreme horizontal aspect ratio (width >= 2.8 * height) can mislead YOLO with marginal confidence
-    into predicting 'Bus'.
+    Identifies cargo trucks / goods carriers (e.g., Tata, Ashok Leyland, box trucks)
+    that COCO YOLO frequently confuses with 'Bus' from behind due to rectangular rear bodies.
+    Trucks feature distinct hanging mudflaps, high undercarriage clearance (axle gap),
+    or square/wide cargo tailboards.
+    """
+    if patch is None or patch.size == 0:
+        return False
+    h, w = patch.shape[:2]
+    if h < 30 or w < 30:
+        return False
+    aspect = w / h
+    # Commercial cargo trucks have squarish rear bodies (aspect ratio ~0.80 - 1.35)
+    # Transit buses are significantly taller and narrower (w/h typically < 0.82)
+    if aspect < 0.80 or aspect > 1.35:
+        return False
+    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) if len(patch.shape) == 3 else patch
+    bottom_strip = gray[int(0.82 * h):, :]
+    if bottom_strip.size == 0:
+        return False
+    col_means = np.mean(bottom_strip, axis=0)
+    col_var = float(np.var(col_means))
+    sobel_h = cv2.Sobel(gray[int(0.40 * h):, :], cv2.CV_64F, 0, 1, ksize=3)
+    h_edge = float(np.mean(np.abs(sobel_h)))
+    if col_var >= 800.0 or (aspect >= 0.88 and h_edge >= 35.0):
+        return True
+    return False
 
-    Legitimate buses and trucks driving down the road (even when distant, small in height, or
-    detected with high confidence) are strictly preserved as Bus / Truck.
+
+def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0, image_np=None):
+    """
+    Resolves vehicle class ambiguities in automotive dashcam perspectives:
+    1. Truncated passenger car hoods at the bottom edge (misleadingly wide, conf < 0.50) -> 'Car'.
+    2. Indian cargo trucks / goods carriers confused by COCO YOLO as 'Bus' -> 'Truck'.
+    3. Distant/mid-range buses and trucks driving down the road -> preserved strictly.
     """
     box_w = x2 - x1
     box_h = y2 - y1
@@ -125,6 +151,15 @@ def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0
         is_marginal_conf = (conf < 0.50)
         if is_bottom_truncated and is_flat_slice and is_marginal_conf:
             return 'Car'
+
+    if name == 'Bus' and image_np is not None:
+        px1, py1 = max(0, x1), max(0, y1)
+        px2, py2 = min(frame_w, x2), min(frame_h, y2)
+        if px2 > px1 and py2 > py1:
+            patch = image_np[py1:py2, px1:px2]
+            if _is_rear_cargo_truck(patch):
+                return 'Truck'
+
     return name
 
 
@@ -335,7 +370,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         else:
             if conf_s < conf:
                 continue
-            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s, image_np=image_np)
             raw_candidates.append({
                 'name': name,
                 'conf': round(conf_s, 3),
@@ -415,7 +450,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         else:
             if conf_s < conf:
                 continue
-            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
+            name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s, image_np=image_np)
             track_id = int(ids[i]) if ids is not None else None
             raw_candidates.append({
                 'name': name,

@@ -9,6 +9,7 @@ import CompareView from '@/components/CompareView';
 import DetectionList from '@/components/DetectionList';
 import StatCard from '@/components/StatCard';
 import PageTransition from '@/components/PageTransition';
+import AccuracyBadgeCard from '@/components/AccuracyBadgeCard';
 import {
   AppConfig,
   ImageOptions,
@@ -332,6 +333,10 @@ export default function ImagePage() {
               )}
             </div>
           )}
+
+          <div className="mt-6">
+            <AccuracyBadgeCard defaultOpen={result !== null} />
+          </div>
         </motion.section>
       </div>
     </PageTransition>

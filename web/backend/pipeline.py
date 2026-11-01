@@ -341,6 +341,12 @@ class DirectFFmpegVideoWriter:
         if self._fallback_writer:
             self._fallback_writer.release()
             self._fallback_writer = None
+            if self.needs_transcode and os.path.exists(self.output_path):
+                try:
+                    from src.enhance import transcode_for_browser
+                    transcode_for_browser(self.output_path, crf=self.crf, preset=self.preset)
+                except Exception as e:
+                    print(f"Fallback transcode warning: {e}")
 
 
 @dataclass
@@ -608,9 +614,10 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                     estimate_dashboard_cutoff(fb_rgb) if len(fb_rgb) >= 3 else 1.0
                 )
 
-            enhanced_batch = enhance_frame_batch(
-                MODELS.enhancer, MODELS.device, fb_rgb,
-                size=proxy_sz, adaptive=opts.adaptive)
+            with torch.inference_mode():
+                enhanced_batch = enhance_frame_batch(
+                    MODELS.enhancer, MODELS.device, fb_rgb,
+                    size=proxy_sz, adaptive=opts.adaptive)
 
             for orig_bgr, enh_rgb in zip(fb_bgr, enhanced_batch):
                 if job.cancel_requested:
