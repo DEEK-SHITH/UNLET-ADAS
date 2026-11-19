@@ -26,6 +26,9 @@ export interface Detection {
   conf: number;
   box: [number, number, number, number];
   risk?: 'LOW' | 'MEDIUM' | 'HIGH';
+  dist_m?: number;
+  label?: string;
+  track_id?: number;
 }
 
 export interface ImageResult {

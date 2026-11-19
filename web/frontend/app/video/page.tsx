@@ -16,6 +16,7 @@ import {
   jobVideoUrl,
   submitVideo,
 } from '@/lib/api';
+import { audioHud } from '@/lib/audio';
 
 const DEFAULT_OPTS: VideoOptions = {
   adaptive: true,
@@ -57,6 +58,13 @@ export default function VideoPage() {
         setJob(s);
         if (s.status === 'done' || s.status === 'error' || s.status === 'cancelled') {
           if (pollRef.current) clearInterval(pollRef.current);
+          if (s.status === 'done') {
+            if (s.high_risk) {
+              audioHud.playHighRiskAlarm();
+            } else {
+              audioHud.playCautionChime();
+            }
+          }
         }
       } catch {
         if (pollRef.current) clearInterval(pollRef.current);

@@ -169,7 +169,7 @@ class ZeroDCECBAM(nn.Module):
         return enhanced, curves
 
     @torch.no_grad()
-    def enhance_full_res(self, x_full, proxy_size=256, interp_mode='bilinear'):
+    def enhance_full_res(self, x_full, proxy_size=256, interp_mode='bilinear', smoother=None):
         """
         Estimate curves on a small downsized proxy (cheap, robust to
         any input size) then apply them directly to the full-resolution
@@ -190,6 +190,8 @@ class ZeroDCECBAM(nn.Module):
                 x_full, size=(proxy_size, proxy_size),
                 mode='bilinear', align_corners=False)
         curves = self.estimate_curves(proxy)
+        if smoother is not None:
+            curves = smoother.smooth(curves)
         enhanced = _apply_proxy_curves_fast(x_full, curves, self.num_iters, interp_mode=interp_mode)
         return enhanced, curves
 

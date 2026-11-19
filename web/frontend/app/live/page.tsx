@@ -18,6 +18,7 @@ import {
   enhanceLiveFrame,
   fetchConfig,
 } from '@/lib/api';
+import { audioHud } from '@/lib/audio';
 
 const DEFAULT_OPTS: ImageOptions = {
   adaptive: true,
@@ -299,6 +300,9 @@ export default function LivePage() {
         latestBrightnessRef.current = r.brightness;
         setLiveResult(r);
         setFrameCount((n) => n + 1);
+        if (r.high_risk) {
+          audioHud.playHighRiskAlarm();
+        }
 
         if (streamEngineRef.current === 'neural') {
           const img = new window.Image();

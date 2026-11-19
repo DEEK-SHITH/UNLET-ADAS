@@ -86,6 +86,11 @@ export default function DetectionList({
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {d.dist_m !== undefined && (
+                    <span className="font-mono text-[10px] font-bold text-accent bg-accent/10 border border-accent/30 rounded px-1.5 py-0.5">
+                      {d.dist_m}m
+                    </span>
+                  )}
                   <span className="font-mono text-xs font-extrabold text-textMain">
                     {pct}%
                   </span>

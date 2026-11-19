@@ -37,10 +37,12 @@ from src.detection import (  # noqa: E402
     estimate_risk_depth,
     estimate_risk_geometry,
     redraw_cached_detections,
+    reset_track_history,
     sharpen_frame,
     track_and_draw,
 )
 from src.enhance import (  # noqa: E402
+    TemporalEnhanceSmoother,
     correct_color_cast,
     enhance_frame_batch,
     load_enhancer,
@@ -214,7 +216,8 @@ def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
     orig_lum = float(orig_rgb[::16, ::16].mean() / 255.0)
 
     enhanced_list = enhance_frame_batch(
-        MODELS.enhancer, MODELS.device, [orig_rgb], size=256, adaptive=opts.adaptive)
+        MODELS.enhancer, MODELS.device, [orig_rgb], size=256, adaptive=opts.adaptive,
+        orig_frames_rgb=[orig_rgb], preserve_detail=True)
     enh_rgb = enhanced_list[0]
 
     eff_conf = scene_aware_conf(opts.det_conf, orig_lum, night_boost=0.0)
@@ -239,7 +242,7 @@ def run_image_pipeline(pil_image: Image.Image, opts: ImageOptions):
     if opts.enable_lanes:
         left, right = detect_lanes(enh_rgb)
         if left is not None or right is not None:
-            enh_rgb = draw_lanes(enh_rgb, left, right)
+            enh_rgb = draw_lanes(enh_rgb, left, right, frame_idx=0)
             result['lanes_found'] = True
 
     if opts.enable_pothole and MODELS.has_pothole:
@@ -314,6 +317,7 @@ class DirectFFmpegVideoWriter:
                 '-pix_fmt', 'yuv420p',
                 '-preset', self.preset,
                 '-crf', str(self.crf),
+                '-tune', 'film',
                 '-movflags', '+faststart',
                 self.output_path
             ]
@@ -410,6 +414,8 @@ class LiveOptions:
     quality_mode: str = 'turbo'     # turbo (384p) | balanced (480p) | quality (640p)
 
 
+LIVE_ENHANCE_SMOOTHER = TemporalEnhanceSmoother(gamma=0.70)
+
 LIVE_DET_CACHE = {
     'last_dets': [],
     'last_counts': {},
@@ -469,7 +475,7 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
     if opts.enable_lanes:
         left, right = detect_lanes(enh_rgb)
         if left is not None or right is not None:
-            enh_rgb = draw_lanes(enh_rgb, left, right)
+            enh_rgb = draw_lanes(enh_rgb, left, right, frame_idx=proc_idx)
 
     if opts.enable_detect and MODELS.has_yolo:
         LIVE_DET_CACHE['frame_idx'] += 1
@@ -555,6 +561,10 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     job = JOBS[job_id]
     job.input_path = input_path
     job.status = 'processing'
+    if MODELS.enhancer is None:
+        load_all_models()
+    reset_track_history()
+    video_smoother = TemporalEnhanceSmoother(gamma=0.65)
     cap = cv2.VideoCapture(input_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -565,19 +575,19 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     # Determine processing speed vs quality trade-offs based on preset
     qp = getattr(opts, 'quality_preset', 'high')
     if qp == 'turbo':
-        crf = 18          # Visually lossless H.264 matching native uploaded video quality
-        preset = 'ultrafast'
-        proxy_sz = 128    # Ultra-fast Zero-DCE proxy estimation
+        crf = 17          # Visually lossless H.264 matching native uploaded video quality
+        preset = 'veryfast' # Smooth motion and deblocking enabled
+        proxy_sz = 256    # 256px Zero-DCE proxy estimation
         eff_imgsz = 384   # High accuracy, low CPU latency
         eff_fast_mode = True
         det_stride = 4    # Run detection every 4th frame, redraw cached boxes on intermediate
         batch_size = 8    # Vectorized PyTorch batching
-        interp_mode = 'nearest'
+        interp_mode = 'bilinear' # Smooth continuous illumination without blocky artifacts
         fast_color = True
     elif qp == 'ultra':
-        crf = 16
-        preset = 'veryfast'
-        proxy_sz = 256
+        crf = 15
+        preset = 'faster'
+        proxy_sz = 384
         eff_imgsz = opts.det_imgsz
         eff_fast_mode = False
         det_stride = 1
@@ -585,9 +595,9 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
         interp_mode = 'bilinear'
         fast_color = False
     else:  # 'high' / 'balanced'
-        crf = 18
-        preset = 'ultrafast'
-        proxy_sz = 192
+        crf = 17
+        preset = 'veryfast'
+        proxy_sz = 256
         eff_imgsz = min(opts.det_imgsz, 512)
         eff_fast_mode = opts.fast_mode
         det_stride = 3 if eff_fast_mode else 1
@@ -600,9 +610,12 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
     out_path = os.path.join(output_dir, f'{job_id}_enhanced.mp4')
     comp_path = os.path.join(output_dir, f'{job_id}_comparison.mp4')
 
-    # Dual single-pass FFmpeg writers (both standard W x H resolution)
+    comp_w = W * 2
+    comp_h = H
+
+    # Dual single-pass FFmpeg writers (W x H for enhanced, 2*W x H for side-by-side comparison)
     writer = DirectFFmpegVideoWriter(out_path, W, H, fps, crf=crf, preset=preset)
-    writer_comp = DirectFFmpegVideoWriter(comp_path, W, H, fps, crf=crf, preset=preset)
+    writer_comp = DirectFFmpegVideoWriter(comp_path, comp_w, comp_h, fps, crf=crf, preset=preset)
 
     has_depth = ensure_depth_model() if opts.use_depth_risk else False
     lane_tracker = LaneTracker() if opts.enable_lanes else None
@@ -646,7 +659,8 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                 enhanced_batch = enhance_frame_batch(
                     MODELS.enhancer, MODELS.device, fb_rgb,
                     size=proxy_sz, adaptive=opts.adaptive,
-                    interp_mode=interp_mode, fast_color=fast_color)
+                    interp_mode=interp_mode, fast_color=fast_color, smoother=video_smoother,
+                    orig_frames_rgb=fb_rgb, preserve_detail=True)
 
             for orig_bgr, enh_rgb in zip(fb_bgr, enhanced_batch):
                 if job.cancel_requested:
@@ -667,7 +681,7 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                     else:
                         left, right = last_lane_lines
                     if left is not None or right is not None:
-                        enh_rgb = draw_lanes(enh_rgb, left, right)
+                        enh_rgb = draw_lanes(enh_rgb, left, right, frame_idx=proc_idx)
 
                 if opts.enable_pothole and MODELS.has_pothole:
                     if run_heavy or not last_pot_boxes:
@@ -747,7 +761,7 @@ def run_video_job(job_id: str, input_path: str, output_dir: str, opts: VideoOpti
                 proc_idx += 1
                 enh_bgr = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
                 writer.write(enh_bgr)
-                comp_frame = _compose_comparison_frame(orig_bgr, enh_bgr, target_w=W, target_h=H)
+                comp_frame = _compose_comparison_frame(orig_bgr, enh_bgr, target_w=comp_w, target_h=comp_h)
                 writer_comp.write(comp_frame)
 
             job.frames_done = count

@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
+import { useEffect, useState } from 'react';
+import { audioHud } from '@/lib/audio';
 
 const links = [
   { href: '/', label: 'Image', icon: '🖼️' },
@@ -12,6 +14,19 @@ const links = [
 
 export default function Navbar() {
   const pathname = usePathname();
+  const [muted, setMuted] = useState(false);
+
+  useEffect(() => {
+    setMuted(audioHud.isMuted());
+  }, []);
+
+  const handleToggleMute = () => {
+    const next = audioHud.toggleMute();
+    setMuted(next);
+    if (!next) {
+      audioHud.playCautionChime();
+    }
+  };
 
   return (
     <header className="glass sticky top-0 z-30 border-b border-border/80">
@@ -48,34 +63,50 @@ export default function Navbar() {
           </div>
         </motion.div>
 
-        <nav className="relative flex items-center gap-1 rounded-full border border-border bg-card/90 p-1 shadow-inner">
-          {links.map((l) => {
-            const active = pathname === l.href;
-            return (
-              <Link
-                key={l.href}
-                href={l.href}
-                className="relative rounded-full px-4 py-1.5 text-sm font-semibold transition-colors"
-              >
-                {active && (
-                  <motion.span
-                    layoutId="nav-pill"
-                    className="absolute inset-0 rounded-full bg-accent-gradient shadow-glow"
-                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                  />
-                )}
-                <span
-                  className={`relative z-10 flex items-center gap-1.5 ${
-                    active ? 'text-base font-bold' : 'text-textDim hover:text-textMain'
-                  }`}
+        <div className="flex items-center gap-2">
+          {/* Audio Chime Mute/Unmute HUD Button */}
+          <button
+            type="button"
+            onClick={handleToggleMute}
+            title={muted ? 'Unmute Audio HUD Alerts' : 'Mute Audio HUD Alerts'}
+            className={`flex h-8 w-8 items-center justify-center rounded-full border text-xs transition-all ${
+              muted
+                ? 'border-border/60 bg-base/50 text-textDim hover:text-textMain'
+                : 'border-accent/40 bg-accent/10 text-accent shadow-glow'
+            }`}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+
+          <nav className="relative flex items-center gap-1 rounded-full border border-border bg-card/90 p-1 shadow-inner">
+            {links.map((l) => {
+              const active = pathname === l.href;
+              return (
+                <Link
+                  key={l.href}
+                  href={l.href}
+                  className="relative rounded-full px-4 py-1.5 text-sm font-semibold transition-colors"
                 >
-                  <span className="hidden sm:inline">{l.icon}</span>
-                  {l.label}
-                </span>
-              </Link>
-            );
-          })}
-        </nav>
+                  {active && (
+                    <motion.span
+                      layoutId="nav-pill"
+                      className="absolute inset-0 rounded-full bg-accent-gradient shadow-glow"
+                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    />
+                  )}
+                  <span
+                    className={`relative z-10 flex items-center gap-1.5 ${
+                      active ? 'text-base font-bold' : 'text-textDim hover:text-textMain'
+                    }`}
+                  >
+                    <span className="hidden sm:inline">{l.icon}</span>
+                    {l.label}
+                  </span>
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
       </div>
     </header>
   );

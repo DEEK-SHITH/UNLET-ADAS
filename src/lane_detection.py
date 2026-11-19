@@ -1,13 +1,11 @@
 """
-UNLET-ADAS: Lane Detection
-=============================
+UNLET-ADAS: Lane Detection & Lane Departure Warning (LDW)
+=========================================================
 Classical computer-vision lane detection (Canny edges + a road-shaped
-region of interest + probabilistic Hough transform), run on the
-enhanced frame. No training data required, which keeps it consistent
-with the rest of the pipeline's lightweight, real-time design —
-unlike object/sign detection, lane markings are geometric, high-
-contrast lines that classical edge detection handles well once the
-frame has been brightened.
+region of interest + probabilistic Hough transform + 2nd order polynomial
+curve fitting), run on the enhanced frame. Includes a real-time Lane
+Departure Warning (LDW) module that monitors vehicle lateral drift
+within the lane corridor and alerts the driver.
 """
 
 import cv2
@@ -18,39 +16,14 @@ def estimate_dashboard_cutoff(frames_rgb, min_static_frac=0.12,
                                max_static_frac=0.6, var_thresh=6.0):
     """
     Auto-detect a static dashboard/steering-wheel region at the bottom
-    of the frame from a short sequence of consecutive frames, so
-    detect_lanes' region of interest can exclude it automatically --
-    no manual "which fraction of my frame is dashboard" tuning needed.
-
-    The dashboard, steering wheel, and hood are physically fixed
-    relative to a dashboard/steering-wheel-mounted camera, so their
-    pixels stay near-identical frame to frame. The road ahead moves
-    (perspective shift from vehicle motion, changing lighting, passing
-    objects), so its pixels vary across frames even on a straight,
-    empty road at night. Scanning per-row pixel variance across time,
-    from the bottom of the frame upward, finds where that static
-    region gives way to the moving road.
-
-    frames_rgb: list of >=3 consecutive RGB frames, same shape.
-    Returns a roi_bottom fraction (0..1) for detect_lanes -- 1.0 (no
-    exclusion) if fewer than 3 frames are given, if no confident
-    static run is found at the bottom (e.g. a windshield-mounted
-    camera, where the whole frame is road and should vary throughout),
-    or if the static run implausibly covers most of the frame (e.g. a
-    stationary/parked vehicle, where trusting it would exclude nearly
-    everything) -- always the safe fallback, never a guess that could
-    make lane detection worse than leaving it off.
+    of the frame from a short sequence of consecutive frames.
     """
     if len(frames_rgb) < 3:
         return 1.0
     stack = np.stack([f.astype(np.float32) for f in frames_rgb], axis=0)
-    # Per-pixel variance across time, averaged across width/channels
-    # into one variance value per row -- a single top-to-bottom profile.
     row_var = stack.var(axis=0).mean(axis=(1, 2))
     h = row_var.shape[0]
 
-    # Scan from the bottom row upward for the first contiguous run of
-    # low-variance (static) rows -- that run is the dashboard/wheel.
     cutoff_row = h
     for y in range(h - 1, -1, -1):
         if row_var[y] < var_thresh:
@@ -65,25 +38,13 @@ def estimate_dashboard_cutoff(frames_rgb, min_static_frac=0.12,
 
 
 def _region_of_interest(edges, roi_top=0.55, roi_bottom=1.0):
-    """
-    Mask everything outside a trapezoid covering the road ahead.
-
-    roi_top/roi_bottom are fractions of frame height (0=top, 1=bottom)
-    for the trapezoid's near and far edges. The defaults (0.55..1.0)
-    assume a windshield-mounted camera where the road fills the entire
-    bottom of the frame. A dashboard/steering-wheel-mounted camera
-    instead has the dashboard occupying the lower portion of the
-    frame — Canny will find plenty of high-contrast edges there (gauge
-    rings, the wheel's silhouette) that get mistaken for lane
-    boundaries. Raising roi_bottom below 1.0 excludes that region;
-    see detect_lanes' roi_bottom parameter.
-    """
+    """Mask everything outside a trapezoid covering the road ahead."""
     h, w = edges.shape
     mask = np.zeros_like(edges)
     y_top, y_bottom = int(h * roi_top), int(h * roi_bottom)
     polygon = np.array([[
-        (0,            y_bottom),
-        (w,            y_bottom),
+        (0,             y_bottom),
+        (w,             y_bottom),
         (int(w * 0.58), y_top),
         (int(w * 0.42), y_top),
     ]], dtype=np.int32)
@@ -91,31 +52,22 @@ def _region_of_interest(edges, roi_top=0.55, roi_bottom=1.0):
     return cv2.bitwise_and(edges, mask)
 
 
-def _average_slope_line(lines, h, y_top_frac=0.55, y_bottom_frac=1.0):
+def _fit_lane_curve(lines, h, y_top_frac=0.55, y_bottom_frac=1.0, num_pts=24):
     """
-    Collapse a cluster of nearby Hough segments (all left-lane or
-    all right-lane) into one representative line, extrapolated from
-    y_bottom_frac * height up to y_top_frac * height — but never
-    further up than the topmost segment actually detected.
-
-    y_bottom_frac matches detect_lanes' roi_bottom: with the default
-    1.0 the line is drawn all the way to the frame's bottom edge; a
-    lower value (e.g. for a dashboard-mounted camera whose lower frame
-    isn't road) stops the line at the region that actually has edge
-    evidence instead of stubbing it out into the excluded area.
-
-    Extrapolating a fixed distance regardless of the evidence is
-    what causes the classic "lines crossing high in the sky" defect:
-    a slope estimated from a short, low segment gets a tiny error,
-    and stretching that line far beyond where any edge was actually
-    seen amplifies the error into a wildly wrong vanishing point —
-    worse on a wide, gently-curving multi-lane road (where a straight
-    line is already an approximation) than on a narrow single-lane one.
+    Fits a smooth 2nd-order polynomial curve (x = a*y^2 + b*y + c) to Hough
+    line segments. Returns (x1, y1, x2, y2, curve_pts), where curve_pts
+    is an (N, 2) int32 array for smooth polyline and corridor drawing.
+    Falls back to robust linear median extrapolation if points are collinear
+    or fewer than 3 segments exist.
     """
     if not lines:
         return None
-    slopes, intercepts = [], []
+
+    all_x = []
+    all_y = []
     min_y = h
+    slopes, intercepts = [], []
+
     for x1, y1, x2, y2 in lines:
         if x2 == x1:
             continue
@@ -124,31 +76,77 @@ def _average_slope_line(lines, h, y_top_frac=0.55, y_bottom_frac=1.0):
         slopes.append(slope)
         intercepts.append(intercept)
         min_y = min(min_y, y1, y2)
-    if not slopes:
+        all_x.extend([x1, x2])
+        all_y.extend([y1, y2])
+
+    if not slopes or not all_x:
         return None
-    # Median, not mean — a couple of noisy/outlier Hough segments
-    # (common on faint night-time markings) shouldn't swing the
-    # extrapolated line's vanishing point.
-    slope, intercept = np.median(slopes), np.median(intercepts)
+
     y1 = int(h * y_bottom_frac)
     y2 = max(int(h * y_top_frac), min_y)
-    x1 = int((y1 - intercept) / slope)
-    x2 = int((y2 - intercept) / slope)
-    return (x1, y1, x2, y2)
+    y_samples = np.linspace(y1, y2, num_pts)
+
+    curve_pts = None
+    if len(all_x) >= 6:
+        try:
+            poly = np.polyfit(all_y, all_x, deg=2)
+            # Sanity check curvature: second derivative 2*poly[0] should be moderate
+            if abs(poly[0]) < 0.003:
+                x_samples = np.polyval(poly, y_samples)
+                curve_pts = np.stack([x_samples.astype(np.int32), y_samples.astype(np.int32)], axis=1)
+        except Exception:
+            curve_pts = None
+
+    # Linear fallback / baseline
+    slope, intercept = np.median(slopes), np.median(intercepts)
+    lx1 = int((y1 - intercept) / slope)
+    lx2 = int((y2 - intercept) / slope)
+
+    if curve_pts is None:
+        x_linear = np.linspace(lx1, lx2, num_pts)
+        curve_pts = np.stack([x_linear.astype(np.int32), y_samples.astype(np.int32)], axis=1)
+
+    return (lx1, y1, lx2, y2, curve_pts)
+
+
+def check_lane_departure(left_lane, right_lane, frame_w, threshold_ratio=0.18):
+    """
+    Computes lateral ego-vehicle offset relative to the lane center.
+    Assumes vehicle center is at frame_w / 2.
+    Returns: (status, offset_px, lane_width_px)
+      status: 'CENTERED' | 'DRIFT_LEFT' | 'DRIFT_RIGHT' | 'UNKNOWN'
+    """
+    if left_lane is None or right_lane is None:
+        return 'UNKNOWN', 0.0, 0.0
+
+    lx_bot = left_lane[0]
+    rx_bot = right_lane[0]
+    lane_width = rx_bot - lx_bot
+    if lane_width <= 40:
+        return 'UNKNOWN', 0.0, 0.0
+
+    lane_center = (lx_bot + rx_bot) / 2.0
+    ego_center = frame_w / 2.0
+    offset = ego_center - lane_center
+
+    dist_to_left = ego_center - lx_bot
+    dist_to_right = rx_bot - ego_center
+    thresh = threshold_ratio * lane_width
+
+    if dist_to_left < thresh:
+        return 'DRIFT_LEFT', round(offset, 1), round(lane_width, 1)
+    elif dist_to_right < thresh:
+        return 'DRIFT_RIGHT', round(offset, 1), round(lane_width, 1)
+
+    return 'CENTERED', round(offset, 1), round(lane_width, 1)
 
 
 class LaneTracker:
     """
     Temporal smoother (Exponential Moving Average + short dropout hold)
-    for left/right lane lines across consecutive video frames.
-
-    Dashed lane markings and brief lighting glitches cause single-frame
-    dropouts or jitter in stateless Canny+Hough detection. Smoothing
-    detected endpoints with an EMA (alpha) and holding the last valid
-    line for up to `max_missing` frames eliminates flicker while still
-    clearing promptly when markings genuinely end.
+    for left/right lane lines and curved polylines across video frames.
     """
-    def __init__(self, alpha=0.4, max_missing=3):
+    def __init__(self, alpha=0.45, max_missing=4):
         self.alpha = float(alpha)
         self.max_missing = int(max_missing)
         self._left = None
@@ -159,13 +157,26 @@ class LaneTracker:
     def _update_side(self, current, prev, miss_count):
         if current is not None:
             if prev is None:
-                return tuple(int(v) for v in current), 0
+                return current, 0
             a = self.alpha
-            smoothed = tuple(
+            # Smooth 4-tuple coords
+            smoothed_coords = tuple(
                 int(round(a * c + (1.0 - a) * p))
-                for c, p in zip(current, prev)
+                for c, p in zip(current[:4], prev[:4])
             )
-            return smoothed, 0
+            # Smooth curve points if present
+            smoothed_pts = None
+            if len(current) > 4 and current[4] is not None and len(prev) > 4 and prev[4] is not None:
+                if len(current[4]) == len(prev[4]):
+                    smoothed_pts = (a * current[4] + (1.0 - a) * prev[4]).astype(np.int32)
+                else:
+                    smoothed_pts = current[4]
+            elif len(current) > 4:
+                smoothed_pts = current[4]
+
+            res = smoothed_coords + ((smoothed_pts,) if smoothed_pts is not None else ())
+            return res, 0
+
         if prev is not None and miss_count < self.max_missing:
             return prev, miss_count + 1
         return None, miss_count + 1
@@ -193,24 +204,9 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
                   hough_threshold=25, min_line_len=30, max_line_gap=80,
                   roi_top=0.55, roi_bottom=1.0, tracker=None):
     """
-    Detect left/right lane boundary lines on an (already enhanced)
-    RGB frame.
-
-    roi_top/roi_bottom (fractions of frame height, 0=top, 1=bottom)
-    control the trapezoidal region of interest — see
-    _region_of_interest's docstring. The defaults assume a
-    windshield-mounted camera where the road fills the entire bottom
-    of the frame; lower roi_bottom below 1.0 for a
-    dashboard/steering-wheel-mounted camera whose lower frame is
-    dashboard, not road (that region's high-contrast gauge/wheel edges
-    otherwise get mistaken for lane boundaries).
-
-    Pass a `LaneTracker` instance via `tracker` when processing video
-    to smooth frame-to-frame jitter and bridge brief 1-3 frame dropouts
-    on dashed markings.
-
-    Returns (left_line, right_line), each either None or an
-    (x1, y1, x2, y2) tuple in pixel coordinates.
+    Detect left/right curved lane boundaries on an enhanced RGB frame.
+    Returns (left_lane, right_lane), each either None or a tuple:
+    (x1, y1, x2, y2, curve_pts).
     """
     h, w = frame_rgb.shape[:2]
     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
@@ -230,53 +226,87 @@ def detect_lanes(frame_rgb, canny_lo=50, canny_hi=150,
             if x2 == x1:
                 continue
             slope = (y2 - y1) / (x2 - x1)
-            if abs(slope) < 0.35:      # near-horizontal — not a lane edge
+            if abs(slope) < 0.35:
                 continue
             (left if slope < 0 else right).append((x1, y1, x2, y2))
 
-    left_line = _average_slope_line(left, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
-    right_line = _average_slope_line(right, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
+    left_lane = _fit_lane_curve(left, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
+    right_lane = _fit_lane_curve(right, h, y_top_frac=roi_top, y_bottom_frac=roi_bottom)
 
-    # A left/right pair should never cross: the left boundary must stay
-    # left of the right boundary at both the near (bottom) and far (top)
-    # end. On a sharp curve or hilly incline, a noisy Hough segment can
-    # give one side a bad slope that swings it across to the other side
-    # of the frame — drawing that looks like an "X" crossing over the
-    # road instead of two lane boundaries. Better to report no lane for
-    # that frame than draw geometry that's visibly wrong.
-    if left_line is not None and right_line is not None:
-        if left_line[0] >= right_line[0] or left_line[2] >= right_line[2]:
-            left_line, right_line = None, None
+    if left_lane is not None and right_lane is not None:
+        if left_lane[0] >= right_lane[0] or left_lane[2] >= right_lane[2]:
+            left_lane, right_lane = None, None
 
     if tracker is not None:
-        return tracker.update(left_line, right_line)
+        return tracker.update(left_lane, right_lane)
 
-    return (left_line, right_line)
+    return (left_lane, right_lane)
 
 
-def draw_lanes(frame_rgb, left_line, right_line,
-               color=(0, 255, 60), thickness=5, fill_alpha=0.0):
+def draw_lanes(frame_rgb, left_lane, right_lane,
+               color=(0, 230, 80), thickness=4, fill_alpha=0.14,
+               show_ldw=True, frame_idx=0):
     """
-    Overlay detected lane boundary lines on frame_rgb. No shaded fill
-    by default (fill_alpha=0) — the point is to mark where the lane
-    edges are while leaving the actual road surface fully visible;
-    pass a small fill_alpha (e.g. 0.12) if a light lane-area tint is
-    wanted instead.
+    Overlay detected curved lane boundaries and semi-transparent drivable
+    navigation corridor on frame_rgb.
+    Includes Lane Departure Warning (LDW) HUD alert if vehicle drifts.
     """
+    h, w = frame_rgb.shape[:2]
     overlay = frame_rgb.copy()
 
-    if left_line is not None:
-        cv2.line(overlay, left_line[:2], left_line[2:], color, thickness)
-    if right_line is not None:
-        cv2.line(overlay, right_line[:2], right_line[2:], color, thickness)
+    ldw_status, offset, lane_w = check_lane_departure(left_lane, right_lane, w)
 
-    if left_line is not None and right_line is not None and fill_alpha > 0:
-        lane_poly = np.array([[
-            left_line[0:2], left_line[2:4],
-            right_line[2:4], right_line[0:2],
-        ]], dtype=np.int32)
-        fill = frame_rgb.copy()
-        cv2.fillPoly(fill, lane_poly, color)
-        overlay = cv2.addWeighted(fill, fill_alpha, overlay, 1 - fill_alpha, 0)
+    # 1. Drivable Corridor Polygon Fill
+    if left_lane is not None and right_lane is not None and fill_alpha > 0:
+        l_pts = left_lane[4] if len(left_lane) > 4 and left_lane[4] is not None else None
+        r_pts = right_lane[4] if len(right_lane) > 4 and right_lane[4] is not None else None
+
+        if l_pts is not None and r_pts is not None:
+            # Corridor polygon: left down to bottom, across to right bottom, up along right
+            corridor_poly = np.vstack([l_pts, r_pts[::-1]])
+            corridor_mask = frame_rgb.copy()
+            corridor_color = (0, 210, 100) if ldw_status == 'CENTERED' else (255, 140, 0)
+            cv2.fillPoly(corridor_mask, [corridor_poly], corridor_color)
+            overlay = cv2.addWeighted(corridor_mask, fill_alpha, overlay, 1.0 - fill_alpha, 0)
+        else:
+            lane_poly = np.array([[
+                left_lane[0:2], left_lane[2:4],
+                right_lane[2:4], right_lane[0:2],
+            ]], dtype=np.int32)
+            corridor_mask = frame_rgb.copy()
+            cv2.fillPoly(corridor_mask, lane_poly, (0, 210, 100))
+            overlay = cv2.addWeighted(corridor_mask, fill_alpha, overlay, 1.0 - fill_alpha, 0)
+
+    # 2. Draw Lane Boundaries (Polylines or Lines)
+    left_color = (255, 60, 60) if ldw_status == 'DRIFT_LEFT' else color
+    right_color = (255, 60, 60) if ldw_status == 'DRIFT_RIGHT' else color
+
+    if left_lane is not None:
+        if len(left_lane) > 4 and left_lane[4] is not None:
+            cv2.polylines(overlay, [left_lane[4]], isClosed=False, color=left_color, thickness=thickness, lineType=cv2.LINE_AA)
+        else:
+            cv2.line(overlay, left_lane[:2], left_lane[2:4], left_color, thickness, lineType=cv2.LINE_AA)
+
+    if right_lane is not None:
+        if len(right_lane) > 4 and right_lane[4] is not None:
+            cv2.polylines(overlay, [right_lane[4]], isClosed=False, color=right_color, thickness=thickness, lineType=cv2.LINE_AA)
+        else:
+            cv2.line(overlay, right_lane[:2], right_lane[2:4], right_color, thickness, lineType=cv2.LINE_AA)
+
+    # 3. Lane Departure Warning HUD Banner
+    if show_ldw and ldw_status in ('DRIFT_LEFT', 'DRIFT_RIGHT'):
+        # Flashing HUD banner
+        flash = (frame_idx // 6) % 2 == 0 if frame_idx > 0 else True
+        if flash:
+            drift_text = "LANE DEPARTURE: DRIFTING LEFT" if ldw_status == 'DRIFT_LEFT' else "LANE DEPARTURE: DRIFTING RIGHT"
+            (tw, th), _ = cv2.getTextSize(drift_text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+            bx1 = (w - tw) // 2 - 16
+            by1 = 40
+            bx2 = bx1 + tw + 32
+            by2 = by1 + th + 18
+            cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
+            cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (0, 69, 255), 2)  # Amber-red border
+            cv2.putText(overlay, f"WARNING: {drift_text}", (bx1 + 10, by1 + th + 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 165, 255), 2, cv2.LINE_AA)
 
     return overlay

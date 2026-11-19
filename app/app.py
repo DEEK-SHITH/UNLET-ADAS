@@ -88,7 +88,8 @@ def enhance_video_fn(video_path, progress=gr.Progress()):
         if not frames:
             return
         enhanced = enhance_frame_batch(
-            model, DEVICE, frames, size=256, adaptive=True)
+            model, DEVICE, frames, size=256, adaptive=True,
+            interp_mode='bilinear', orig_frames_rgb=frames, preserve_detail=True)
         for orig_bgr, enh_rgb in zip(origs, enhanced):
             enh_bgr  = cv2.cvtColor(enh_rgb, cv2.COLOR_RGB2BGR)
             combined = np.hstack([orig_bgr, enh_bgr])

@@ -10,7 +10,108 @@ FastAPI web backend.
 import cv2
 import numpy as np
 
+from collections import Counter, deque
 from src.depth import classify_proximity, sample_proximity
+
+# Sliding-window class history per ByteTrack ID to prevent label flipping (Truck / Bus / Car)
+_TRACK_CLASS_HISTORY: dict[int, deque] = {}
+_MAX_HISTORY_LEN = 7
+
+
+# Bounding-box height history per track ID for Optical Time-To-Collision (TTC) estimation
+_TRACK_BBOX_HISTORY: dict[int, deque] = {}
+
+def estimate_ttc(track_id: int, y1: int, y2: int, fps: float = 30.0) -> tuple[str, float]:
+    """
+    Estimates Time-To-Collision (TTC) using the optical expansion rate of bounding box height.
+    Returns: (risk_level, ttc_seconds)
+    """
+    if track_id is None:
+        return 'LOW', 99.0
+    
+    h = max(y2 - y1, 1)
+    if track_id not in _TRACK_BBOX_HISTORY:
+        _TRACK_BBOX_HISTORY[track_id] = deque(maxlen=8)
+    
+    _TRACK_BBOX_HISTORY[track_id].append(h)
+    history = _TRACK_BBOX_HISTORY[track_id]
+    
+    if len(history) >= 4:
+        dh = history[-1] - history[0]
+        dt = (len(history) - 1) / max(fps, 1.0)
+        growth_rate = dh / max(dt, 0.01)
+        if growth_rate > 8.0:
+            ttc = h / max(growth_rate, 0.1)
+            if ttc < 2.5:
+                return 'HIGH', round(ttc, 1)
+            elif ttc < 4.5:
+                return 'MEDIUM', round(ttc, 1)
+    return 'LOW', 99.0
+
+
+# Known real-world obstacle physical widths (in meters) for monocular pinhole distance estimation
+_REAL_WORLD_WIDTHS_M = {
+    'Car': 1.82,
+    'Bus': 2.55,
+    'Truck': 2.50,
+    'Motorcycle': 0.80,
+    'Bicycle': 0.65,
+    'Person': 0.52,
+    'Dog': 0.45,
+    'Cat': 0.35,
+    'Traffic Light': 0.40,
+    'Stop Sign': 0.75,
+}
+
+def estimate_metric_distance(x1: int, y1: int, x2: int, y2: int,
+                             frame_w: int, frame_h: int,
+                             class_name: str = 'Car',
+                             camera_height_m: float = 1.30,
+                             horizon_ratio: float = 0.50,
+                             focal_length_px: float = None) -> float:
+    """
+    Computes true metric physical distance (in meters) using ground-plane inverse perspective
+    geometry and class-specific optical bounding box priors. Costs $0 without needing LiDAR.
+    """
+    if focal_length_px is None:
+        focal_length_px = float(frame_w) * 0.88
+    
+    box_w = max(x2 - x1, 1)
+    real_w = _REAL_WORLD_WIDTHS_M.get(class_name, 1.80)
+    d_pinhole = float((focal_length_px * real_w) / box_w)
+    
+    y_horizon = frame_h * horizon_ratio
+    dy = max(y2 - y_horizon, 2.0)
+    d_ground = float(camera_height_m * (focal_length_px / dy))
+    
+    # Fused estimate: ground-plane for nearby objects, pinhole width for distant objects
+    ground_weight = float(np.clip((y2 - y_horizon) / (0.35 * max(frame_h, 1)), 0.20, 0.80))
+    dist_m = ground_weight * d_ground + (1.0 - ground_weight) * d_pinhole
+    return float(np.clip(dist_m, 1.5, 120.0))
+
+
+def reset_track_history():
+    """Reset temporal tracking history (called when starting a new video/stream)."""
+    global _TRACK_CLASS_HISTORY, _TRACK_BBOX_HISTORY
+    _TRACK_CLASS_HISTORY.clear()
+    _TRACK_BBOX_HISTORY.clear()
+
+def _get_stabilized_class(track_id: int, current_name: str) -> str:
+    """
+    Sliding-window majority voting over past frames for active ByteTrack IDs.
+    Eliminates rapid single-frame label toggles (e.g. Truck vs Bus vs Car).
+    """
+    if track_id is None:
+        return current_name
+    if track_id not in _TRACK_CLASS_HISTORY:
+        _TRACK_CLASS_HISTORY[track_id] = deque(maxlen=_MAX_HISTORY_LEN)
+    _TRACK_CLASS_HISTORY[track_id].append(current_name)
+    counts = Counter(_TRACK_CLASS_HISTORY[track_id])
+    most_common_class, most_common_count = counts.most_common(1)[0]
+    if most_common_count >= 2 or len(_TRACK_CLASS_HISTORY[track_id]) <= 2:
+        return most_common_class
+    return current_name
+
 
 ADAS_CLASSES = {
     0:  ('Person',        (50,  205,  50)),
@@ -391,13 +492,23 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         name = item['name']
         conf_s = item['conf']
         x1, y1, x2, y2 = item['box']
+        dist_m = estimate_metric_distance(x1, y1, x2, y2, w, h, class_name=name)
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map, class_name=name)
 
-        # High risk alarms are reserved for physical collision hazards
+        # Automatic metric distance risk escalation
+        if name in COLLISION_OBSTACLE_CLASSES:
+            cx = (x1 + x2) / 2
+            in_ego = 0.20 * w <= cx <= 0.80 * w
+            if dist_m < 8.5 and in_ego:
+                risk = 'HIGH'
+            elif dist_m < 22.0 and risk == 'LOW' and in_ego:
+                risk = 'MEDIUM'
+
         if name in COLLISION_OBSTACLE_CLASSES and risk == 'HIGH':
             high_risk = True
 
-        label = f'{name} · {risk}'
+        dist_str = f'{dist_m:.1f}m'
+        label = f'{name} · {dist_str} · {risk}'
         _draw_detection(img_bgr, x1, y1, x2, y2, label, risk)
         counts[name] = counts.get(name, 0) + 1
         det_list.append({
@@ -405,6 +516,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
             'conf': conf_s,
             'box': [x1, y1, x2, y2],
             'risk': risk,
+            'dist_m': round(dist_m, 1),
             'label': label,
         })
 
@@ -474,13 +586,36 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
         conf_s = item['conf']
         x1, y1, x2, y2 = item['box']
         track_id = item.get('track_id')
+        if track_id is not None:
+            name = _get_stabilized_class(track_id, name)
+            item['name'] = name
+        dist_m = estimate_metric_distance(x1, y1, x2, y2, w, h, class_name=name)
         risk = estimate_risk(x1, y1, x2, y2, w, h, depth_map=depth_map, class_name=name)
+        ttc_sec = 99.0
+        if track_id is not None and name in COLLISION_OBSTACLE_CLASSES:
+            ttc_risk, ttc_sec = estimate_ttc(track_id, y1, y2, fps=30.0)
+            if ttc_risk == 'HIGH':
+                risk = 'HIGH'
+
+        # Automatic metric distance risk escalation
+        if name in COLLISION_OBSTACLE_CLASSES:
+            cx = (x1 + x2) / 2
+            in_ego = 0.20 * w <= cx <= 0.80 * w
+            if dist_m < 8.5 and in_ego:
+                risk = 'HIGH'
+            elif dist_m < 22.0 and risk == 'LOW' and in_ego:
+                risk = 'MEDIUM'
 
         if name in COLLISION_OBSTACLE_CLASSES and risk == 'HIGH':
             high_risk = True
 
+        dist_str = f'{dist_m:.1f}m'
         id_bit = f'#{track_id} ' if track_id is not None else ''
-        label = f'{name} {id_bit}· {risk}'
+        if ttc_sec < 4.5:
+            label = f'{name} {id_bit}· {dist_str} (TTC {ttc_sec:.1f}s) · {risk}'
+        else:
+            label = f'{name} {id_bit}· {dist_str} · {risk}'
+
         _draw_detection(img_bgr, x1, y1, x2, y2, label, risk)
         counts[name] = counts.get(name, 0) + 1
         if track_id is not None:
@@ -490,6 +625,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
             'conf': conf_s,
             'box': [x1, y1, x2, y2],
             'risk': risk,
+            'dist_m': round(dist_m, 1),
             'label': label,
             'track_id': track_id,
         })

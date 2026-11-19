@@ -384,7 +384,8 @@ def process_video_chunk(job, model, DEVICE, yolo, has_yolo,
         # loss, since the curves are always applied at full resolution
         # regardless of proxy size.
         enhanced = enhance_frame_batch(
-            model, DEVICE, fb, size=128, adaptive=p['adaptive_mode'])
+            model, DEVICE, fb, size=256, adaptive=p['adaptive_mode'],
+            interp_mode='bilinear', orig_frames_rgb=fb, preserve_detail=True)
 
         for orig_bgr, enh_rgb in zip(ob, enhanced):
             # In fast mode, the expensive model passes (pothole YOLO,
@@ -1128,8 +1129,8 @@ streamlit run app/streamlit_app.py
                     # directly in the app; falls back to the original
                     # file (still downloadable) if that fails.
                     from src.enhance import transcode_for_browser
-                    transcode_for_browser(job['enh_p'])
-                    transcode_for_browser(job['cmp_p'])
+                    transcode_for_browser(job['enh_p'], crf=17)
+                    transcode_for_browser(job['cmp_p'], crf=17)
                     job['status'] = 'done'
                     st.rerun()
             else:

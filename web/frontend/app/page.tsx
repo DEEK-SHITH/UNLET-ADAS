@@ -16,6 +16,7 @@ import {
   enhanceImage,
   fetchConfig,
 } from '@/lib/api';
+import { audioHud } from '@/lib/audio';
 
 const DEFAULT_OPTS: ImageOptions = {
   adaptive: true,
@@ -66,6 +67,9 @@ export default function ImagePage() {
     try {
       const r = await enhanceImage(file, opts);
       setResult(r);
+      if (r.high_risk) {
+        audioHud.playHighRiskAlarm();
+      }
     } catch (e: any) {
       setError(e.message || 'Something went wrong');
     } finally {
