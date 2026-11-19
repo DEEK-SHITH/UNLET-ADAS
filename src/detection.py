@@ -126,6 +126,7 @@ ADAS_CLASSES = {
     2:  ('Car',           (30,  144, 255)),   # Dodger Blue
     3:  ('Motorcycle',    (255, 100, 100)),   # Light Coral
     5:  ('Bus',           (138,  43, 226)),   # Blue Violet
+    6:  ('Auto-Rickshaw', (255, 191,   0)),   # Warm Amber / Gold (COCO train mislabel on roads)
     7:  ('Truck',         (255,  20, 147)),   # Deep Pink
     9:  ('Traffic Light', (255, 215,   0)),   # Golden Yellow
     11: ('Stop Sign',     (220,  20,  60)),   # Crimson Red
@@ -144,6 +145,7 @@ LOWLIGHT_CLASSES = {
     2:  ('Car',           (30,  144, 255)),
     3:  ('Motorcycle',    (255, 100, 100)),
     4:  ('Bus',           (138,  43, 226)),
+    6:  ('Auto-Rickshaw', (255, 191,   0)),
     14: ('Bird',          (0,   206, 209)),
     15: ('Cat',           (255, 182, 193)),
     16: ('Dog',           (255, 140,   0)),
@@ -385,6 +387,25 @@ def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0
     return name
 
 
+def _disambiguate_animal_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0):
+    """
+    Resolves animal taxonomy in Indian road environments:
+    - Stray dogs moving on Indian roads are commonly mislabeled as 'Sheep' or 'Cat' by COCO YOLO.
+    - Large cattle (cows, bulls, buffaloes) are standardized to 'Cattle / Cow'.
+    """
+    box_w = max(x2 - x1, 1)
+    box_h = max(y2 - y1, 1)
+    aspect = box_w / float(box_h)
+
+    if name in ('Sheep', 'Cat'):
+        # On Indian paved roadways, free-roaming medium quadrupeds are stray dogs
+        if 0.70 <= aspect <= 2.30:
+            return 'Dog'
+    elif name == 'Cow':
+        return 'Cattle / Cow'
+    return name
+
+
 def _merge_overlapping_traffic_lights(det_list):
     """
     Merges duplicate or multi-aspect traffic light bounding boxes (such as top
@@ -531,6 +552,47 @@ def _filter_duplicate_vehicle_boxes(det_list):
     return keep
 
 
+def _filter_duplicate_animal_boxes(det_list):
+    """
+    Suppresses redundant overlapping bounding boxes for animals
+    (e.g., both Dog and Sheep predicted on the same stray dog).
+    """
+    if len(det_list) <= 1:
+        return det_list
+
+    def _box_iou(b1, b2):
+        ix1 = max(b1[0], b2[0])
+        iy1 = max(b1[1], b2[1])
+        ix2 = min(b1[2], b2[2])
+        iy2 = min(b1[3], b2[3])
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        inter = iw * ih
+        a1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+        a2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+        union = a1 + a2 - inter
+        return inter / max(union, 1e-6)
+
+    sorted_dets = sorted(det_list, key=lambda d: d.get('conf', 0), reverse=True)
+    suppressed = set()
+    animal_set = {'Dog', 'Sheep', 'Cattle / Cow', 'Cow', 'Cat', 'Horse', 'Bird'}
+
+    keep = []
+    for i, d1 in enumerate(sorted_dets):
+        if i in suppressed:
+            continue
+        keep.append(d1)
+        for j in range(i + 1, len(sorted_dets)):
+            if j in suppressed:
+                continue
+            d2 = sorted_dets[j]
+            if d1['name'] in animal_set and d2['name'] in animal_set:
+                if _box_iou(d1['box'], d2['box']) > 0.35:
+                    suppressed.add(j)
+
+    return keep
+
+
 def sharpen_frame(img_rgb, amount=0.25):
     """
     Fast, subtle unsharp-mask filter to restore crisp high-frequency edges,
@@ -590,9 +652,13 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
                 'confirmed': conf_s >= conf,
             })
         else:
-            if conf_s < conf:
+            is_animal = name in ('Bird', 'Cat', 'Dog', 'Horse', 'Sheep', 'Cattle / Cow', 'Elephant')
+            # Street animals and road surface hazards use higher sensitivity (lower threshold)
+            threshold = min(conf, 0.18) if is_animal else conf
+            if conf_s < threshold:
                 continue
             name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s, image_np=image_np)
+            name = _disambiguate_animal_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
             raw_candidates.append({
                 'name': name,
                 'conf': round(conf_s, 3),
@@ -603,6 +669,7 @@ def detect_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
     # Coherence filters: merge fragmented traffic lights and remove overlapping duplicate boxes
     filtered_dets = _merge_overlapping_traffic_lights(raw_candidates)
     filtered_dets = _filter_duplicate_vehicle_boxes(filtered_dets)
+    filtered_dets = _filter_duplicate_animal_boxes(filtered_dets)
 
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     counts = {}
@@ -681,9 +748,12 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
                 'confirmed': conf_s >= conf,
             })
         else:
-            if conf_s < conf:
+            is_animal = name in ('Bird', 'Cat', 'Dog', 'Horse', 'Sheep', 'Cattle / Cow', 'Elephant')
+            threshold = min(conf, 0.18) if is_animal else conf
+            if conf_s < threshold:
                 continue
             name = _disambiguate_vehicle_class(name, x1, y1, x2, y2, w, h, conf=conf_s, image_np=image_np)
+            name = _disambiguate_animal_class(name, x1, y1, x2, y2, w, h, conf=conf_s)
             track_id = int(ids[i]) if ids is not None else None
             raw_candidates.append({
                 'name': name,
@@ -695,6 +765,7 @@ def track_and_draw(yolo, image_np, conf=0.25, imgsz=640, depth_map=None,
 
     filtered_dets = _merge_overlapping_traffic_lights(raw_candidates)
     filtered_dets = _filter_duplicate_vehicle_boxes(filtered_dets)
+    filtered_dets = _filter_duplicate_animal_boxes(filtered_dets)
 
     img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     counts = {}

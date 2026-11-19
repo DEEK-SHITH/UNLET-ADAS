@@ -443,25 +443,25 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     orig_lum = float(frame_rgb[::16, ::16].mean() / 255.0)
 
-    # Resolution-aware proxy size for real-time speed
+    # High-accuracy resolution presets for real-time perception
     if opts.quality_mode == 'turbo':
-        proxy_sz = 128
-        live_imgsz = min(opts.det_imgsz, 256)
-        jpeg_q = 76
-        det_model = MODELS.yolo_fast if MODELS.has_yolo_fast else MODELS.yolo
-        interleave_stride = 3
-    elif opts.quality_mode == 'balanced':
         proxy_sz = 192
-        live_imgsz = min(opts.det_imgsz, 320)
-        jpeg_q = 82
+        live_imgsz = max(min(opts.det_imgsz, 480), 384)
+        jpeg_q = 80
+        det_model = MODELS.yolo
+        interleave_stride = 2
+    elif opts.quality_mode == 'balanced':
+        proxy_sz = 224
+        live_imgsz = max(min(opts.det_imgsz, 512), 480)
+        jpeg_q = 84
         det_model = MODELS.yolo
         interleave_stride = 2
     else:  # 'quality'
         proxy_sz = 256
-        live_imgsz = opts.det_imgsz
+        live_imgsz = max(opts.det_imgsz, 640)
         jpeg_q = 88
         det_model = MODELS.yolo
-        interleave_stride = 2
+        interleave_stride = 1
 
     # If adaptive and frame is truly broad daylight (orig_lum >= 0.65),
     # bypass neural DCE-Net to preserve natural daylight feed.
@@ -495,13 +495,13 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
 
     if opts.enable_pothole and MODELS.has_pothole:
         enh_rgb, potholes = detect_single_class(
-            MODELS.pothole_yolo, enh_rgb, conf=max(opts.det_conf, 0.22),
+            MODELS.pothole_yolo, enh_rgb, conf=min(max(opts.det_conf, 0.15), 0.22),
             imgsz=live_imgsz, label_prefix='Pothole', color=(0, 165, 255)
         )
 
     if opts.enable_signs and MODELS.has_signs:
         enh_rgb, signs = detect_signs(
-            MODELS.sign_yolo, enh_rgb, conf=max(opts.det_conf, 0.30), imgsz=live_imgsz
+            MODELS.sign_yolo, enh_rgb, conf=min(max(opts.det_conf, 0.18), 0.25), imgsz=live_imgsz
         )
 
     if opts.enable_detect and MODELS.has_yolo:

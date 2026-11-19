@@ -22,11 +22,11 @@ import { audioHud } from '@/lib/audio';
 
 const DEFAULT_OPTS: ImageOptions = {
   adaptive: true,
-  det_conf: 0.25,
+  det_conf: 0.20,
   det_imgsz: 640,
   enable_detect: true,
-  enable_pothole: false,
-  enable_signs: false,
+  enable_pothole: true,
+  enable_signs: true,
   enable_lanes: false,
   use_depth_risk: false,
 };
@@ -95,6 +95,7 @@ export default function LivePage() {
   }, []);
 
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [videoAspect, setVideoAspect] = useState<string>('16/9');
 
   async function startCamera(targetMode?: 'environment' | 'user') {
     setCameraError(null);
@@ -119,7 +120,15 @@ export default function LivePage() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          const vw = videoRef.current?.videoWidth || 16;
+          const vh = videoRef.current?.videoHeight || 9;
+          setVideoAspect(`${vw} / ${vh}`);
+        };
         await videoRef.current.play().catch(() => {});
+        const vw = videoRef.current?.videoWidth || 16;
+        const vh = videoRef.current?.videoHeight || 9;
+        setVideoAspect(`${vw} / ${vh}`);
       }
       setCameraOn(true);
     } catch (e: any) {
@@ -146,17 +155,28 @@ export default function LivePage() {
     setCameraOn(false);
   }
 
-  async function captureFrameBlob(maxWidth?: number, quality = 0.8): Promise<Blob | null> {
+  async function captureFrameBlob(targetDim = 480, quality = 0.82): Promise<Blob | null> {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.videoWidth === 0) return null;
 
     let w = video.videoWidth;
     let h = video.videoHeight;
-    if (maxWidth && w > maxWidth) {
-      h = Math.round((h * maxWidth) / w);
-      w = maxWidth;
+    // Rescale maintaining native aspect ratio so features remain sharp
+    if (w <= h) {
+      // Portrait orientation (phone held vertically)
+      if (w > targetDim) {
+        h = Math.round((h * targetDim) / w);
+        w = targetDim;
+      }
+    } else {
+      // Landscape orientation
+      if (h > targetDim) {
+        w = Math.round((w * targetDim) / h);
+        h = targetDim;
+      }
     }
+
     lastSentDimsRef.current = { w, h };
     canvas.width = w;
     canvas.height = h;
@@ -343,8 +363,8 @@ export default function LivePage() {
         continue;
       }
       const qm = liveQualityModeRef.current;
-      const maxW = qm === 'turbo' ? 320 : qm === 'balanced' ? 440 : 640;
-      const blob = await captureFrameBlob(maxW, qm === 'turbo' ? 0.72 : 0.82);
+      const targetDim = qm === 'turbo' ? 480 : qm === 'balanced' ? 540 : 640;
+      const blob = await captureFrameBlob(targetDim, qm === 'turbo' ? 0.78 : 0.85);
       if (!blob) {
         await new Promise((r) => setTimeout(r, 40));
         continue;
@@ -355,7 +375,7 @@ export default function LivePage() {
       const liveOpts: LiveOptions = {
         adaptive: optsRef.current.adaptive,
         det_conf: optsRef.current.det_conf,
-        det_imgsz: maxW,
+        det_imgsz: targetDim,
         enable_detect: optsRef.current.enable_detect,
         enable_pothole: optsRef.current.enable_pothole,
         enable_signs: optsRef.current.enable_signs,
@@ -626,14 +646,17 @@ export default function LivePage() {
 
           <div className="mt-4 border-t border-border pt-4">
             <SliderField
-              label="Confidence threshold"
+              label="Perception Sensitivity (Confidence Threshold)"
               value={opts.det_conf}
-              min={0.1}
-              max={0.9}
+              min={0.10}
+              max={0.80}
               step={0.05}
-              format={(v) => v.toFixed(2)}
+              format={(v) => `${(v * 100).toFixed(0)}% (${v <= 0.20 ? 'High Sensitivity · Night' : v <= 0.35 ? 'Balanced' : 'Strict'})`}
               onChange={(v) => setOpts({ ...opts, det_conf: v })}
             />
+            <p className="mt-1.5 text-[11px] text-textDim">
+              Set to 15%–20% for night streets, stray animals & potholes. Higher = stricter filtering.
+            </p>
           </div>
 
           <motion.button
@@ -688,13 +711,17 @@ export default function LivePage() {
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video
                 ref={videoRef}
-                className={`aspect-video w-full bg-black object-contain ${cameraOn ? '' : 'hidden'}`}
+                className={`w-full bg-black object-contain transition-all ${cameraOn ? '' : 'hidden'}`}
+                style={{ aspectRatio: videoAspect }}
                 autoPlay
                 playsInline
                 muted
               />
               {!cameraOn && (
-                <div className="flex aspect-video items-center justify-center bg-black text-sm text-textDim">
+                <div
+                  className="flex w-full items-center justify-center bg-black text-sm text-textDim"
+                  style={{ aspectRatio: videoAspect }}
+                >
                   Camera is off
                 </div>
               )}
@@ -723,16 +750,22 @@ export default function LivePage() {
               {streaming ? (
                 <canvas
                   ref={liveCanvasRef}
-                  className="aspect-video w-full bg-black object-contain"
+                  className="w-full bg-black object-contain transition-all"
+                  style={{ aspectRatio: videoAspect }}
                 />
               ) : snapResult?.enhanced_image ? (
-                <CrossfadeImage
-                  src={snapResult.enhanced_image}
-                  alt="Enhanced Snapshot"
-                  className="aspect-video w-full bg-black"
-                />
+                <div style={{ aspectRatio: videoAspect }} className="w-full bg-black">
+                  <CrossfadeImage
+                    src={snapResult.enhanced_image}
+                    alt="Enhanced Snapshot"
+                    className="h-full w-full object-contain"
+                  />
+                </div>
               ) : (
-                <div className="flex aspect-video items-center justify-center bg-black text-sm text-textDim">
+                <div
+                  className="flex w-full items-center justify-center bg-black text-sm text-textDim"
+                  style={{ aspectRatio: videoAspect }}
+                >
                   {cameraOn
                     ? 'Start live streaming or take a snapshot'
                     : 'Turn the camera on to begin'}
