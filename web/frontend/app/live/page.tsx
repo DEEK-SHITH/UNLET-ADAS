@@ -63,6 +63,7 @@ export default function LivePage() {
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number | null>(null);
   const latestDetsRef = useRef<any[]>([]);
+  const lastSentDimsRef = useRef({ w: 320, h: 240 });
   const fpsHistoryRef = useRef<number[]>([]);
   const latestBrightnessRef = useRef<number | null>(null);
 
@@ -156,6 +157,7 @@ export default function LivePage() {
       h = Math.round((h * maxWidth) / w);
       w = maxWidth;
     }
+    lastSentDimsRef.current = { w, h };
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
@@ -199,41 +201,109 @@ export default function LivePage() {
       if (ctx) {
         const b = latestBrightnessRef.current;
         if (optsRef.current.adaptive) {
-          if (b !== null && b >= 0.36) {
+          if (b !== null && b >= 0.58) {
             // Already well-lit room or daylight: display natural raw camera video without artificial bleaching
             ctx.filter = 'none';
           } else {
-            // Dark scene: scale brightness and contrast boost proportionally to how dark it is
-            const darkRatio = b !== null ? Math.min(1.0, Math.max(0.0, (0.36 - b) / 0.26)) : 0.6;
-            const bPct = Math.round(100 + darkRatio * 35);
-            const cPct = Math.round(100 + darkRatio * 15);
-            ctx.filter = `brightness(${bPct}%) contrast(${cPct}%)`;
+            // Dark scene: scale brightness, contrast, and color boost proportionally to how dark it is
+            const darkRatio = b !== null ? Math.min(1.0, Math.max(0.0, (0.58 - b) / 0.40)) : 0.65;
+            const bPct = Math.round(100 + darkRatio * 45);
+            const cPct = Math.round(100 + darkRatio * 20);
+            const sPct = Math.round(100 + darkRatio * 15);
+            ctx.filter = `brightness(${bPct}%) contrast(${cPct}%) saturate(${sPct}%)`;
           }
         } else {
-          ctx.filter = 'contrast(115%) brightness(130%)';
+          ctx.filter = 'contrast(120%) brightness(140%) saturate(110%)';
         }
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.filter = 'none';
 
         const dets = latestDetsRef.current;
+        const sent = lastSentDimsRef.current;
+        const scaleX = sent.w > 0 ? canvas.width / sent.w : 1.0;
+        const scaleY = sent.h > 0 ? canvas.height / sent.h : 1.0;
+
         if (dets && dets.length > 0) {
           dets.forEach((d) => {
             if (!d.box) return;
-            const [x1, y1, x2, y2] = d.box;
+            const [rx1, ry1, rx2, ry2] = d.box;
+            const x1 = rx1 * scaleX;
+            const y1 = ry1 * scaleY;
+            const bw = (rx2 - rx1) * scaleX;
+            const bh = (ry2 - ry1) * scaleY;
+
             const isHigh = d.risk === 'HIGH';
             const isSafe = d.risk === 'SAFE' || d.risk === 'LOW';
-            ctx.strokeStyle = isHigh ? '#ff3b30' : isSafe ? '#00e676' : '#00f0ff';
-            ctx.lineWidth = 2.5;
-            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+            const isSignal = d.risk === 'SIGNAL';
+            const isRickshaw = /rickshaw/i.test(d.name || '');
+            const isAnimal = /cow|cattle|dog|bird|cat|horse|sheep|elephant/i.test(d.name || '');
 
-            ctx.fillStyle = isHigh ? 'rgba(255, 59, 48, 0.9)' : isSafe ? 'rgba(0, 230, 118, 0.9)' : 'rgba(0, 240, 255, 0.9)';
-            const label = `${d.name} ${(d.conf * 100).toFixed(0)}% · ${d.risk || 'SAFE'}`;
-            ctx.font = 'bold 12px sans-serif';
+            ctx.strokeStyle = isHigh
+              ? '#ff3b30'
+              : isRickshaw
+              ? '#ffb300'
+              : isAnimal
+              ? '#ff9100'
+              : isSignal
+              ? '#ffd600'
+              : isSafe
+              ? '#00e676'
+              : '#00f0ff';
+
+            ctx.lineWidth = Math.max(2, Math.round(canvas.width / 480));
+            ctx.strokeRect(x1, y1, bw, bh);
+
+            // Sleek corner brackets for true automotive HUD appearance
+            const cornerLen = Math.min(14, bw * 0.25, bh * 0.25);
+            ctx.lineWidth = ctx.lineWidth + 1;
+            // Top-left
+            ctx.beginPath();
+            ctx.moveTo(x1, y1 + cornerLen);
+            ctx.lineTo(x1, y1);
+            ctx.lineTo(x1 + cornerLen, y1);
+            ctx.stroke();
+            // Top-right
+            ctx.beginPath();
+            ctx.moveTo(x1 + bw - cornerLen, y1);
+            ctx.lineTo(x1 + bw, y1);
+            ctx.lineTo(x1 + bw, y1 + cornerLen);
+            ctx.stroke();
+            // Bottom-left
+            ctx.beginPath();
+            ctx.moveTo(x1, y1 + bh - cornerLen);
+            ctx.lineTo(x1, y1 + bh);
+            ctx.lineTo(x1 + cornerLen, y1 + bh);
+            ctx.stroke();
+            // Bottom-right
+            ctx.beginPath();
+            ctx.moveTo(x1 + bw - cornerLen, y1 + bh);
+            ctx.lineTo(x1 + bw, y1 + bh);
+            ctx.lineTo(x1 + bw, y1 + bh - cornerLen);
+            ctx.stroke();
+
+            ctx.fillStyle = isHigh
+              ? 'rgba(255, 59, 48, 0.92)'
+              : isRickshaw
+              ? 'rgba(255, 179, 0, 0.92)'
+              : isAnimal
+              ? 'rgba(255, 145, 0, 0.92)'
+              : isSignal
+              ? 'rgba(255, 214, 0, 0.92)'
+              : isSafe
+              ? 'rgba(0, 230, 118, 0.92)'
+              : 'rgba(0, 240, 255, 0.92)';
+
+            const distStr = d.dist_m !== undefined ? ` · ${d.dist_m}m` : '';
+            const label = `${d.name} ${(d.conf * 100).toFixed(0)}%${distStr} · ${d.risk || 'SAFE'}`;
+            const fontSize = Math.max(12, Math.round(canvas.width / 95));
+            ctx.font = `bold ${fontSize}px sans-serif`;
             const textW = ctx.measureText(label).width;
-            ctx.fillRect(x1, Math.max(y1 - 18, 0), textW + 6, 16);
+            const bannerH = fontSize + 6;
+            const bannerY = Math.max(y1 - bannerH, 0);
+            ctx.fillRect(x1, bannerY, textW + 8, bannerH);
 
             ctx.fillStyle = '#000000';
-            ctx.fillText(label, x1 + 3, Math.max(y1 - 5, 12));
+            ctx.fillText(label, x1 + 4, bannerY + fontSize - 1);
           });
         }
       }
@@ -287,6 +357,8 @@ export default function LivePage() {
         det_conf: optsRef.current.det_conf,
         det_imgsz: maxW,
         enable_detect: optsRef.current.enable_detect,
+        enable_pothole: optsRef.current.enable_pothole,
+        enable_signs: optsRef.current.enable_signs,
         enable_lanes: optsRef.current.enable_lanes,
         interleaved: interleavedRef.current,
         quality_mode: qm,
@@ -296,7 +368,12 @@ export default function LivePage() {
         const r = await enhanceLiveFrame(blob, liveOpts);
         if (!streamingRef.current) break;
 
-        latestDetsRef.current = r.detections || [];
+        const allDets = [
+          ...(r.detections || []),
+          ...(r.potholes || []).map((p: any) => ({ ...p, risk: 'MEDIUM', name: p.name || 'Pothole' })),
+          ...(r.signs || []).map((s: any) => ({ ...s, risk: 'SIGNAL', name: s.name || 'Road Sign' })),
+        ];
+        latestDetsRef.current = allDets;
         latestBrightnessRef.current = r.brightness;
         setLiveResult(r);
         setFrameCount((n) => n + 1);
@@ -309,12 +386,18 @@ export default function LivePage() {
           img.onload = () => {
             const canvas = liveCanvasRef.current;
             if (!canvas) return;
-            if (canvas.width !== img.width || canvas.height !== img.height) {
-              canvas.width = img.width;
-              canvas.height = img.height;
+            const targetW = videoRef.current?.videoWidth || img.width;
+            const targetH = videoRef.current?.videoHeight || img.height;
+            if (canvas.width !== targetW || canvas.height !== targetH) {
+              canvas.width = targetW;
+              canvas.height = targetH;
             }
             const ctx = canvas.getContext('2d');
-            if (ctx) ctx.drawImage(img, 0, 0);
+            if (ctx) {
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            }
           };
           img.src = r.enhanced_image;
         }

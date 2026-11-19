@@ -153,9 +153,15 @@ def load_all_models():
 
     try:
         from ultralytics import YOLO
+        indian_pt = os.path.join(APP_DIR, 'yolov8_indian_adas.pt')
         yolo_s = os.path.join(REPO_ROOT, 'yolov8s.pt')
         try:
-            MODELS.yolo = YOLO(yolo_s if os.path.exists(yolo_s) else 'yolov8s.pt')
+            if os.path.exists(indian_pt):
+                MODELS.yolo = YOLO(indian_pt)
+            elif os.path.exists(yolo_s):
+                MODELS.yolo = YOLO(yolo_s)
+            else:
+                MODELS.yolo = YOLO('yolov8s.pt')
         except Exception:
             MODELS.yolo = YOLO(os.path.join(REPO_ROOT, 'yolov8n.pt'))
         MODELS.has_yolo = True
@@ -409,6 +415,8 @@ class LiveOptions:
     det_conf: float = 0.25
     det_imgsz: int = 384
     enable_detect: bool = True
+    enable_pothole: bool = False
+    enable_signs: bool = False
     enable_lanes: bool = False
     interleaved: bool = True
     quality_mode: str = 'turbo'     # turbo (384p) | balanced (480p) | quality (640p)
@@ -455,27 +463,46 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
         det_model = MODELS.yolo
         interleave_stride = 2
 
-    # If adaptive and frame is already well-lit (indoor room or daylight >= 0.38),
-    # bypass neural DCE-Net completely to save ~40ms CPU time and preserve natural raw feed.
-    if opts.adaptive and orig_lum >= 0.38:
+    # If adaptive and frame is truly broad daylight (orig_lum >= 0.65),
+    # bypass neural DCE-Net to preserve natural daylight feed.
+    # Note: Mobile cameras with auto-exposure often push dark rooms/roads to 0.35-0.48,
+    # so keeping the threshold at 0.65 ensures mobile night/dark video is properly enhanced.
+    if opts.adaptive and orig_lum >= 0.65:
         enh_rgb = frame_rgb.copy()
         enh_lum = orig_lum
     else:
         enhanced_list = enhance_frame_batch(
             MODELS.enhancer, MODELS.device, [frame_rgb],
-            size=proxy_sz, adaptive=opts.adaptive
+            size=proxy_sz, adaptive=opts.adaptive,
+            dark_thresh=0.22, bright_thresh=0.62,
+            interp_mode='bilinear', fast_color=True,
+            orig_frames_rgb=[frame_rgb], preserve_detail=True,
+            smoother=LIVE_ENHANCE_SMOOTHER,
         )
         enh_rgb = enhanced_list[0]
         enh_lum = float(enh_rgb[::16, ::16].mean() / 255.0)
 
     dets = []
+    potholes = []
+    signs = []
     counts = {}
     high_risk = False
 
     if opts.enable_lanes:
         left, right = detect_lanes(enh_rgb)
         if left is not None or right is not None:
-            enh_rgb = draw_lanes(enh_rgb, left, right, frame_idx=proc_idx)
+            enh_rgb = draw_lanes(enh_rgb, left, right, frame_idx=LIVE_DET_CACHE['frame_idx'])
+
+    if opts.enable_pothole and MODELS.has_pothole:
+        enh_rgb, potholes = detect_single_class(
+            MODELS.pothole_yolo, enh_rgb, conf=max(opts.det_conf, 0.22),
+            imgsz=live_imgsz, label_prefix='Pothole', color=(0, 165, 255)
+        )
+
+    if opts.enable_signs and MODELS.has_signs:
+        enh_rgb, signs = detect_signs(
+            MODELS.sign_yolo, enh_rgb, conf=max(opts.det_conf, 0.30), imgsz=live_imgsz
+        )
 
     if opts.enable_detect and MODELS.has_yolo:
         LIVE_DET_CACHE['frame_idx'] += 1
@@ -514,6 +541,8 @@ def run_live_pipeline(image_bytes: bytes, opts: LiveOptions) -> tuple[bytes, dic
         'brightness': round(orig_lum, 4),
         'enhanced_brightness': round(enh_lum, 4),
         'detections': dets,
+        'potholes': potholes,
+        'signs': signs,
         'counts': counts,
         'high_risk': high_risk,
         'processing_ms': proc_ms,

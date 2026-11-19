@@ -54,11 +54,18 @@ _REAL_WORLD_WIDTHS_M = {
     'Car': 1.82,
     'Bus': 2.55,
     'Truck': 2.50,
+    'Auto-Rickshaw': 1.30,
     'Motorcycle': 0.80,
     'Bicycle': 0.65,
     'Person': 0.52,
+    'Cattle / Cow': 1.65,
+    'Cow': 1.65,
     'Dog': 0.45,
     'Cat': 0.35,
+    'Horse': 1.50,
+    'Sheep': 0.65,
+    'Elephant': 2.80,
+    'Bird': 0.28,
     'Traffic Light': 0.40,
     'Stop Sign': 0.75,
 }
@@ -114,27 +121,42 @@ def _get_stabilized_class(track_id: int, current_name: str) -> str:
 
 
 ADAS_CLASSES = {
+    0:  ('Person',        (50,  205,  50)),   # Lime Green
+    1:  ('Bicycle',       (255, 165,   0)),   # Amber Orange
+    2:  ('Car',           (30,  144, 255)),   # Dodger Blue
+    3:  ('Motorcycle',    (255, 100, 100)),   # Light Coral
+    5:  ('Bus',           (138,  43, 226)),   # Blue Violet
+    7:  ('Truck',         (255,  20, 147)),   # Deep Pink
+    9:  ('Traffic Light', (255, 215,   0)),   # Golden Yellow
+    11: ('Stop Sign',     (220,  20,  60)),   # Crimson Red
+    14: ('Bird',          (0,   206, 209)),   # Dark Turquoise
+    15: ('Cat',           (255, 182, 193)),   # Light Pink
+    16: ('Dog',           (255, 140,   0)),   # Dark Orange (Stray dog)
+    17: ('Horse',         (160,  82,  45)),   # Saddle Brown
+    18: ('Sheep',         (240, 230, 140)),   # Khaki (Sheep / Goat)
+    19: ('Cattle / Cow',  (205, 133,  63)),   # Peru Brown (Indian cattle / cow / bull)
+    20: ('Elephant',      (112, 128, 144)),   # Slate Gray
+}
+
+LOWLIGHT_CLASSES = {
     0:  ('Person',        (50,  205,  50)),
     1:  ('Bicycle',       (255, 165,   0)),
     2:  ('Car',           (30,  144, 255)),
     3:  ('Motorcycle',    (255, 100, 100)),
-    5:  ('Bus',           (138,  43, 226)),
-    7:  ('Truck',         (255,  20, 147)),
-    9:  ('Traffic Light', (255, 215,   0)),
-    11: ('Stop Sign',     (220,  20,  60)),
-}
-
-LOWLIGHT_CLASSES = {
-    0: ('Person',     (50,  205,  50)),
-    1: ('Bicycle',    (255, 165,   0)),
-    2: ('Car',        (30,  144, 255)),
-    3: ('Motorcycle', (255, 100, 100)),
-    4: ('Bus',        (138,  43, 226)),
+    4:  ('Bus',           (138,  43, 226)),
+    14: ('Bird',          (0,   206, 209)),
+    15: ('Cat',           (255, 182, 193)),
+    16: ('Dog',           (255, 140,   0)),
+    17: ('Horse',         (160,  82,  45)),
+    18: ('Sheep',         (240, 230, 140)),
+    19: ('Cattle / Cow',  (205, 133,  63)),
+    20: ('Elephant',      (112, 128, 144)),
 }
 
 # Physical obstacle classes capable of presenting a vehicular collision hazard
 COLLISION_OBSTACLE_CLASSES = {
-    'Person', 'Bicycle', 'Car', 'Motorcycle', 'Bus', 'Truck', 'Pothole'
+    'Person', 'Bicycle', 'Car', 'Motorcycle', 'Bus', 'Truck', 'Auto-Rickshaw',
+    'Cattle / Cow', 'Cow', 'Dog', 'Cat', 'Horse', 'Sheep', 'Elephant', 'Bird', 'Pothole'
 }
 
 # Regulatory/traffic signals (informational, not collision impact hazards)
@@ -146,6 +168,7 @@ RISK_COLORS = {
     'HIGH':   (220,  20,  60),   # Crimson Red
     'MEDIUM': (255, 165,   0),   # Amber Orange
     'LOW':    (50,  205,  50),   # Lime Green
+    'SAFE':   (50,  205,  50),   # Lime Green
     'SIGNAL': (255, 215,   0),   # Golden Yellow
     'INFO':   (0,   191, 255),   # Deep Sky Blue
 }
@@ -237,15 +260,104 @@ def _is_rear_cargo_truck(patch):
     return False
 
 
+def _is_auto_rickshaw(patch, box_w, box_h, original_class, conf=1.0, frame_w=1920):
+    """
+    Identifies Indian Auto-Rickshaws (3-wheelers / Bajaj RE, TVS King, Ape, e-rickshaws)
+    that standard COCO YOLO misclassifies as 'Truck' (or 'Car'/'Motorcycle').
+
+    Distinguishing features of Indian auto-rickshaws:
+    1. Aspect Ratio: Tall, upright, compact profile. Width/Height between 0.60 and 1.35.
+       (Standard cars have W/H > 1.30; freight trucks have wide chassis > 2.2m with dual wheels).
+    2. Color Palette: Distinctive high-visibility livery across Indian cities:
+       - Top canopy: Bright auto yellow, green, or black canvas hood.
+       - Lower body: Dark CNG green (Delhi/Gujarat/Mumbai) or jet black (Mumbai/Kolkata/Hyderabad)
+         or bright yellow (Bangalore/Chennai/AP).
+    3. Structural Silhouette: Tapered upper canopy, open-side passenger cabin,
+       and absence of heavy dual-axle freight truck clearance.
+    """
+    if box_h <= 0 or box_w <= 0:
+        return False
+
+    aspect = box_w / float(box_h)
+
+    # Auto-rickshaws strictly fall within 0.60 <= W/H <= 1.35
+    if aspect < 0.60 or aspect > 1.35:
+        return False
+
+    # A massive vehicle (> 50% of frame width) is a heavy bus or truck right in front
+    if box_w > 0.50 * frame_w:
+        return False
+
+    has_rickshaw_colors = False
+
+    if patch is not None and patch.size >= 100:
+        h_p, w_p = patch.shape[:2]
+        # Check for heavy multi-axle freight cargo truck features
+        if _is_rear_cargo_truck(patch):
+            return False
+
+        # Color analysis in HSV
+        hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV) if len(patch.shape) == 3 else None
+        if hsv is not None:
+            H = hsv[:, :, 0]
+            S = hsv[:, :, 1]
+            V = hsv[:, :, 2]
+
+            # Yellow mask (Auto-rickshaw yellow canopy or yellow body): H in [14, 38], S >= 35, V >= 40
+            yellow_mask = (H >= 14) & (H <= 38) & (S >= 35) & (V >= 40)
+            yellow_ratio = float(np.mean(yellow_mask))
+
+            # Green mask (CNG Auto green body): H in [38, 85], S >= 28, V >= 30
+            green_mask = (H >= 38) & (H <= 85) & (S >= 28) & (V >= 30)
+            green_ratio = float(np.mean(green_mask))
+
+            # Dark lower chassis / black hood: V < 45
+            dark_ratio = float(np.mean(V < 45))
+
+            # Upper canopy yellow (top 45% of patch)
+            top_hsv = hsv[:int(0.45 * h_p), :]
+            top_yellow = float(np.mean((top_hsv[:, :, 0] >= 14) & (top_hsv[:, :, 0] <= 38) &
+                                       (top_hsv[:, :, 1] >= 35) & (top_hsv[:, :, 2] >= 40))) if top_hsv.size > 0 else 0.0
+
+            if yellow_ratio >= 0.04 or green_ratio >= 0.045 or top_yellow >= 0.04:
+                has_rickshaw_colors = True
+            elif (yellow_ratio + green_ratio) >= 0.035 and dark_ratio >= 0.20:
+                has_rickshaw_colors = True
+
+    # Disambiguation logic based on COCO YOLO initial prediction:
+    if original_class == 'Truck':
+        # COCO consistently mislabels auto-rickshaws as 'Truck' due to their open rear and boxy canopy.
+        # If it has rickshaw colors, or if it is an upright/compact vehicle (0.62 <= W/H <= 1.25)
+        # without heavy truck cargo rear characteristics:
+        if has_rickshaw_colors:
+            return True
+        if 0.62 <= aspect <= 1.25 and box_w <= 0.45 * frame_w:
+            return True
+
+    elif original_class == 'Car':
+        # Cars have low, wide aspect ratios (typically > 1.25). An upright box with rickshaw colors is an auto.
+        if 0.65 <= aspect <= 1.18 and has_rickshaw_colors:
+            return True
+
+    elif original_class == 'Motorcycle':
+        # Motorcycles are very narrow (aspect < 0.60). A wide vehicle with rickshaw colors or canopy is an auto.
+        if aspect >= 0.65 and (has_rickshaw_colors or box_w >= 50):
+            return True
+
+    return False
+
+
 def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0, image_np=None):
     """
     Resolves vehicle class ambiguities in automotive dashcam perspectives:
     1. Truncated passenger car hoods at the bottom edge (misleadingly wide, conf < 0.50) -> 'Car'.
-    2. Indian cargo trucks / goods carriers confused by COCO YOLO as 'Bus' -> 'Truck'.
-    3. Distant/mid-range buses and trucks driving down the road -> preserved strictly.
+    2. Indian Auto-Rickshaws misclassified by COCO YOLO as 'Truck', 'Car', or 'Motorcycle' -> 'Auto-Rickshaw'.
+    3. Indian cargo trucks / goods carriers confused by COCO YOLO as 'Bus' -> 'Truck'.
+    4. Distant/mid-range buses and trucks driving down the road -> preserved strictly.
     """
     box_w = x2 - x1
     box_h = y2 - y1
+
     if name in ('Bus', 'Truck'):
         is_bottom_truncated = (y2 >= 0.88 * frame_h)
         is_flat_slice = (box_h > 0 and box_w >= 2.8 * box_h)
@@ -253,13 +365,22 @@ def _disambiguate_vehicle_class(name, x1, y1, x2, y2, frame_w, frame_h, conf=1.0
         if is_bottom_truncated and is_flat_slice and is_marginal_conf:
             return 'Car'
 
-    if name == 'Bus' and image_np is not None:
+    patch = None
+    if image_np is not None:
         px1, py1 = max(0, x1), max(0, y1)
         px2, py2 = min(frame_w, x2), min(frame_h, y2)
         if px2 > px1 and py2 > py1:
             patch = image_np[py1:py2, px1:px2]
-            if _is_rear_cargo_truck(patch):
-                return 'Truck'
+
+    # Auto-Rickshaw disambiguation
+    if name in ('Truck', 'Car', 'Motorcycle'):
+        if _is_auto_rickshaw(patch, box_w, box_h, name, conf=conf, frame_w=frame_w):
+            return 'Auto-Rickshaw'
+
+    # Indian cargo trucks confused by COCO YOLO as 'Bus'
+    if name == 'Bus' and patch is not None:
+        if _is_rear_cargo_truck(patch):
+            return 'Truck'
 
     return name
 
@@ -403,7 +524,7 @@ def _filter_duplicate_vehicle_boxes(det_list):
                 continue
             d2 = sorted_dets[j]
             # If two vehicle detections overlap heavily
-            if d1['name'] in ('Car', 'Bus', 'Truck') and d2['name'] in ('Car', 'Bus', 'Truck'):
+            if d1['name'] in ('Car', 'Bus', 'Truck', 'Auto-Rickshaw') and d2['name'] in ('Car', 'Bus', 'Truck', 'Auto-Rickshaw'):
                 if _box_iou(d1['box'], d2['box']) > 0.40:
                     suppressed.add(j)
 

@@ -98,6 +98,8 @@ export interface LiveOptions {
   det_conf: number;
   det_imgsz: number;
   enable_detect: boolean;
+  enable_pothole?: boolean;
+  enable_signs?: boolean;
   enable_lanes: boolean;
   interleaved: boolean;
   quality_mode: 'turbo' | 'balanced' | 'quality';
@@ -107,6 +109,8 @@ export interface LiveResult {
   brightness: number;
   enhanced_brightness: number;
   detections: Detection[];
+  potholes?: Detection[];
+  signs?: Detection[];
   counts: Record<string, number>;
   high_risk: boolean;
   processing_ms: number;
